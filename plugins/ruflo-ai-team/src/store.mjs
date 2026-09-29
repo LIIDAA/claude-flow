@@ -32,13 +32,13 @@ export class InMemoryStore {
     const value = { ...current, ...patch, id, updatedAt: now() }; bucket.runs.set(id, value); this.#audit(bucket, actor, `run.${value.status}`, id); return clone(value);
   }
   async createTask(tenantId, input, actor = '-') {
-    const bucket = this.#bucket(tenantId); const run = bucket.runs.get(input.runId); if (!run) return null;
+    const bucket = this.#bucket(tenantId); const run = bucket.runs.get(input.runId); if (!run || run.status === 'complete') return null;
     const id = `task_${randomUUID()}`; const value = { id, runId: input.runId, title: input.title, description: input.description, assigneeRole: input.assigneeRole, status: 'open', result: null, createdAt: now(), updatedAt: now() };
     bucket.tasks.set(id, value); this.#audit(bucket, actor, 'task.created', id); return clone(value);
   }
   async listTasks(tenantId, runId) { return [...this.#bucket(tenantId).tasks.values()].filter((x) => x.runId === runId).map(clone); }
   async updateTask(tenantId, id, patch, actor = '-') {
-    const bucket = this.#bucket(tenantId); const current = bucket.tasks.get(id); if (!current) return null;
+    const bucket = this.#bucket(tenantId); const current = bucket.tasks.get(id); if (!current || bucket.runs.get(current.runId)?.status === 'complete') return null;
     const value = { ...current, ...patch, id, updatedAt: now() }; bucket.tasks.set(id, value); this.#audit(bucket, actor, 'task.updated', id); return clone(value);
   }
   async remember(tenantId, input, actor = '-') {
@@ -83,9 +83,9 @@ export class FirestoreStore {
   async createRun(t,i,a='-') { if(!await this.#get(t,'teams',i.teamId))return null; const v={id:`run_${randomUUID()}`,teamId:i.teamId,objective:i.objective,budgetUnits:i.budgetUnits,spentUnits:0,status:'planned',createdAt:now(),updatedAt:now()}; await this.#put(t,'runs',v); await this.#audit(t,a,'run.created',v.id); return v; }
   async getRun(t,id) { return this.#get(t,'runs',id); }
   async updateRun(t,id,p,a='-') { const c=await this.#get(t,'runs',id); if(!c)return null; const v={...c,...p,id,updatedAt:now()}; await this.#put(t,'runs',v); await this.#audit(t,a,`run.${v.status}`,id); return v; }
-  async createTask(t,i,a='-') { if(!await this.#get(t,'runs',i.runId))return null; const v={id:`task_${randomUUID()}`,runId:i.runId,title:i.title,description:i.description,assigneeRole:i.assigneeRole,status:'open',result:null,createdAt:now(),updatedAt:now()}; await this.#put(t,'tasks',v); await this.#audit(t,a,'task.created',v.id); return v; }
+  async createTask(t,i,a='-') { const run=await this.#get(t,'runs',i.runId); if(!run||run.status==='complete')return null; const v={id:`task_${randomUUID()}`,runId:i.runId,title:i.title,description:i.description,assigneeRole:i.assigneeRole,status:'open',result:null,createdAt:now(),updatedAt:now()}; await this.#put(t,'tasks',v); await this.#audit(t,a,'task.created',v.id); return v; }
   async listTasks(t,runId) { const snap=await this.#tenant(t).collection('tasks').where('runId','==',runId).limit(200).get(); return snap.docs.map(d=>d.data()); }
-  async updateTask(t,id,p,a='-') { const c=await this.#get(t,'tasks',id); if(!c)return null; const v={...c,...p,id,updatedAt:now()}; await this.#put(t,'tasks',v); await this.#audit(t,a,'task.updated',id); return v; }
+  async updateTask(t,id,p,a='-') { const c=await this.#get(t,'tasks',id); if(!c||(await this.#get(t,'runs',c.runId))?.status==='complete')return null; const v={...c,...p,id,updatedAt:now()}; await this.#put(t,'tasks',v); await this.#audit(t,a,'task.updated',id); return v; }
   async remember(t,i,a='-') { const timestamp=now(); const v={id:i.key||`mem_${randomUUID()}`,teamId:i.teamId,runId:i.runId||null,text:i.text,tags:i.tags||[],provenance:i.provenance||'user',actorHash:a,contentHash:createHash('sha256').update(i.text).digest('hex'),safetyStatus:i.safetyStatus||'accepted',embeddingModel:'feature-hash-256',embeddingVersion:'1',createdAt:timestamp,updatedAt:timestamp}; await this.#put(t,'memories',v); await this.#audit(t,a,'memory.remembered',v.id); return v; }
   async listMemories(t,{teamId}={}) { let query=this.#tenant(t).collection('memories'); if(teamId)query=query.where('teamId','==',teamId); const snap=await query.limit(1000).get(); return snap.docs.map(d=>d.data()); }
   async usage(t) { const [teams,runs,tasks,memories]=await Promise.all(['teams','runs','tasks','memories'].map(k=>this.#list(t,k))); return {teams:teams.length,runs:runs.length,tasks:tasks.length,memories:memories.length,limits:{teams:1,agentsPerTeam:3,monthlyTasks:100,runBudgetUnits:100}}; }

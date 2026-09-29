@@ -126,6 +126,7 @@ v3/plugins/quantum-optimizer/tests/mcp-tools.test.ts
 plugins/ruflo-x-gateway/test/gateway.test.mjs
 plugins/ruflo-x-gateway/test/oauth.test.mjs
 plugins/ruflo-x-gateway/test/registration.test.mjs
+plugins/ruflo-x-gateway/test/claude-directory.test.mjs
 
 # ruflo-chatgpt-federation: same pattern — plugin-local deps (jose, nostr-tools/pure) not resolvable from root vitest
 plugins/ruflo-chatgpt-federation/test/oauth.test.mjs

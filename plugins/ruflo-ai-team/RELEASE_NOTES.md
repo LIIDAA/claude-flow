@@ -1,3 +1,15 @@
+# 0.1.2 — Desktop-style team workspace
+
+- Reworked the ChatGPT board into a compact ruOS-inspired desktop with window chrome, workspace rail, status indicators, run metrics, task rows, and responsive narrow-width layout.
+- Versioned the MCP Apps resource URI to `ui://ruflo-ai-team/board-v2.html` so hosts refresh the cached UI.
+- Kept all content read-only and rendered with text nodes; no external scripts, frames, or network requests were added.
+
+# 0.1.1 — ChatGPT team board and run completion
+
+- Added a read-only ChatGPT team board with ruOS-inspired styling through an MCP Apps HTML resource. Tenant data is returned only by the OAuth-scoped `team_board` tool.
+- Added `run_complete`, guarded by `team:run` and completion of all tasks, so evidence exports can show a completed run.
+- Kept the RuVector fallback explicit while the pinned native binding fails its dimension self-test; native search is not claimed as verified.
+
 # 0.1.0 — Initial review candidate
 
 - New multi-tenant RuFlo AI Team MCP service, separate from RuFlo Federation.

@@ -13,6 +13,6 @@ check('six skills',readdirSync(new URL('skills/',root),{withFileTypes:true}).fil
 check('four agents',readdirSync(new URL('agents/',root)).filter((name)=>name.endsWith('.md')).length===4);
 check('four commands',readdirSync(new URL('commands/',root)).filter((name)=>name.endsWith('.md')).length===4);
 const server=read('src/server.mjs');
-check('twelve MCP tools',(server.match(/mcp\.tool\('/g)||[]).length===12);
+check('fourteen MCP tools',(server.match(/mcp\.tool\('/g)||[]).length+(server.match(/mcp\.registerTool\('/g)||[]).length===14);
 check('explicit annotation factories',server.includes('readOnlyHint: true')&&server.includes('readOnlyHint: false')&&server.includes('destructiveHint: false')&&server.includes('idempotentHint:')&&server.includes('openWorldHint: false'));
 console.log(`smoke ok: ${checks.length} checks`);
