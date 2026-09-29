@@ -91,6 +91,34 @@ describe('spawnAgent() auto-domain branch — domain pool visibility', () => {
     expect(task?.assignedTo?.id).toBe(agentId);
   });
 
+  it('does not throw when an auto-domain spawn pushes a full domain pool over capacity', async () => {
+    // 'queen'/'coordinator' both map to the 'queen' domain, whose pool is
+    // capped at maxSize 1 (DOMAIN_CONFIGS: agentNumbers: [1]). A second
+    // auto-domain spawn into that domain must not reject spawnAgent() itself
+    // (callers like the MCP scale-up loop don't wrap this call in try/catch)
+    // — it should degrade to the pre-fix pool-invisible state instead.
+    const first = await coordinator.spawnAgent({ type: 'queen' });
+    expect(first.domain).toBe('queen');
+
+    let poolFullEvent: unknown;
+    coordinator.once('agent.domain_pool_full', (event) => {
+      poolFullEvent = event;
+    });
+
+    const second = await coordinator.spawnAgent({ type: 'coordinator' });
+    expect(second.domain).toBe('queen');
+    expect(second.spawned).toBe(true);
+
+    // The second agent is still registered and idle, just not pool-visible.
+    const secondAgent = coordinator.getAgent(second.agentId);
+    expect(secondAgent?.status).toBe('idle');
+    expect(secondAgent).toBeDefined();
+
+    const pool = coordinator.getDomainPool('queen');
+    expect(pool!.getPoolStats().total).toBe(1);
+    expect(poolFullEvent).toBeDefined();
+  });
+
   it('still works correctly via the domain-aware branches (regression guard)', async () => {
     // registerAgentWithDomain()'s own pool.add() call path must be
     // unaffected by this fix.
