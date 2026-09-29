@@ -52,9 +52,11 @@ Reward-hack check (manual checklist, no standalone reward-hack CLI reachable —
 
 | Field | Value |
 |---|---|
-| Session commit | `PENDING` |
-| Gist SHA-256 (pre-witness content) | `PENDING` |
-| Witness stamp | `PENDING` |
+| Session commit | `6d5699e8521d03286090e006afa8e6eba61c6495` |
+| Gist SHA-256 (pre-witness content) | `ccabbc459ac0466a6f481a11a81b9248fd114a01bde91afadf9f4a435d2cc0f5` |
+| Witness stamp | `7fca8c149f8d59107ff1bba9f523483399bfaf2728d22dc623ef6958dfcc07ac` |
+
+Verifier procedure: fetch this gist from the branch, strip the witness table's three filled values back to `PENDING`, SHA-256 it, concatenate with the session commit above, SHA-256 again — result must equal the witness stamp.
 
 ## Recommended Next Steps
 
