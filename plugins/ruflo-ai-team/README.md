@@ -13,7 +13,7 @@ The public v0.1 surface coordinates work; it does not silently send messages, de
 - Stored task, memory, and evidence content is provenance-labelled and nonce-fenced as untrusted data.
 - Fourteen focused tools, two prompts, a template resource, and a ChatGPT MCP Apps board.
 
-The read-only `team_board` tool renders a compact ruOS-style desktop workspace in ChatGPT, with team/run metrics and task status. Its public HTML resource contains no tenant data; the tool requires `team:read`. The rail is visual context, not clickable navigation. `run_complete` requires `team:run` and refuses to complete a run until it has at least one task and every task is complete.
+The read-only `team_board` tool opens one compact ruOS-style workspace in ChatGPT. Its Teams, Runs, Tasks, and Evidence rail navigates inside the same card; selecting a run or pressing Refresh calls the same scoped tool through the MCP Apps bridge without asking ChatGPT to render another board. Evidence shows a private run summary; `evidence_export` provides the full bundle in chat. Its public HTML resource contains no tenant data; the tool requires `team:read`. Other tools remain data-only. Historical chat cards are immutable, so open a fresh chat after refreshing tools to see the current UI. `run_complete` requires `team:run` and refuses to complete a run until it has at least one task and every task is complete.
 
 Memory search reports `lexical-degraded` unless a compatible native RuVector binding passes the startup probe. The pinned `@ruvector/core` 0.1.32 package with its 0.1.30 optional native binding fails that probe in local validation with a dimension mismatch. Do not set `RUFLO_AI_TEAM_VECTOR=native` in production until a compatible binary is verified.
 

@@ -11,7 +11,7 @@ import { fenced, scanStoredText } from './untrusted.mjs';
 import { privacyPage, supportPage, termsPage } from './public-pages.mjs';
 
 export const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
-const TEAM_BOARD_URI = 'ui://ruflo-ai-team/board-v2.html';
+const TEAM_BOARD_URI = 'ui://ruflo-ai-team/board-v4.html';
 const TEAM_BOARD_HTML = readFileSync(new URL('../ui/team-board.html', import.meta.url), 'utf8');
 const MAX_BODY = 512 * 1024;
 const TOOL_SCOPES = Object.freeze({
@@ -58,16 +58,18 @@ export async function createAiTeamService({ store, vectorMemory, verifyToken, po
     mcp.tool('team_get', 'Reads one AI team owned by the authenticated tenant. Requires team:read. Foreign and missing IDs both return not_found.', { teamId: z.string() }, READ('Get AI team'), scoped(SCOPES.read, async ({ teamId }) => { const value=await store.getTeam(auth.tenantId,teamId); return value?text(value):notFound(); }));
     mcp.registerTool('team_board', {
       title: 'Show AI team board',
-      description: 'Renders a private, read-only ChatGPT board of your teams, or one run and its tasks. Requires team:read. Use after data tools when a visual summary helps. No actions are executed.',
+      description: 'Opens one private, read-only ChatGPT workspace for teams, runs, tasks, and evidence summaries. Requires team:read. The user can navigate and refresh inside this one widget; avoid calling it repeatedly in the same chat. No actions are executed.',
       inputSchema: { runId: z.string().optional() },
       annotations: READ('Show AI team board'),
       _meta: { ui: { resourceUri: TEAM_BOARD_URI }, 'openai/outputTemplate': TEAM_BOARD_URI },
     }, scoped(SCOPES.read, async ({ runId }) => {
       const teams = await store.listTeams(auth.tenantId);
+      const runs = await store.listRuns(auth.tenantId);
       const run = runId ? await store.getRun(auth.tenantId, runId) : null;
       if (runId && !run) return notFound();
       const tasks = run ? await store.listTasks(auth.tenantId, runId) : [];
-      const board = { teams: teams.map(({ id, name, status }) => ({ id, name, status })), run: run && { id: run.id, objective: run.objective, status: run.status, budgetUnits: run.budgetUnits, spentUnits: run.spentUnits }, tasks: tasks.map(({ id, title, status }) => ({ id, title, status })) };
+      const evidence = run ? await store.evidence(auth.tenantId, runId) : null;
+      const board = { teams: teams.map(({ id, name, status }) => ({ id, name, status })), runs: runs.slice(0, 100).map(({ id, teamId, objective, status, budgetUnits, spentUnits }) => ({ id, teamId, objective: objective.slice(0, 160), status, budgetUnits, spentUnits })), run: run && { id: run.id, objective: run.objective, status: run.status, budgetUnits: run.budgetUnits, spentUnits: run.spentUnits }, tasks: tasks.map(({ id, title, status }) => ({ id, title, status })), evidence: evidence && { runId, generatedAt: evidence.generatedAt, auditEvents: evidence.audit.length, taskCount: evidence.tasks.length, teamName: evidence.team?.name ?? '' } };
       return { ...text(board), structuredContent: board };
     }));
     mcp.tool('team_update', 'Updates the name, objective, roles, or status of an existing tenant-local team. Requires team:write. It does not run agents or perform external actions.', {

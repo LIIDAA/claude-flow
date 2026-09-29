@@ -27,6 +27,7 @@ export class InMemoryStore {
     bucket.runs.set(id, value); this.#audit(bucket, actor, 'run.created', id); return clone(value);
   }
   async getRun(tenantId, id) { const value = this.#bucket(tenantId).runs.get(id); return value ? clone(value) : null; }
+  async listRuns(tenantId) { return [...this.#bucket(tenantId).runs.values()].map(clone); }
   async updateRun(tenantId, id, patch, actor = '-') {
     const bucket = this.#bucket(tenantId); const current = bucket.runs.get(id); if (!current) return null;
     const value = { ...current, ...patch, id, updatedAt: now() }; bucket.runs.set(id, value); this.#audit(bucket, actor, `run.${value.status}`, id); return clone(value);
@@ -82,6 +83,7 @@ export class FirestoreStore {
   async updateTeam(t,id,p,a='-') { const c=await this.#get(t,'teams',id); if(!c)return null; const v={...c,...p,id,updatedAt:now()}; await this.#put(t,'teams',v); await this.#audit(t,a,'team.updated',id); return v; }
   async createRun(t,i,a='-') { if(!await this.#get(t,'teams',i.teamId))return null; const v={id:`run_${randomUUID()}`,teamId:i.teamId,objective:i.objective,budgetUnits:i.budgetUnits,spentUnits:0,status:'planned',createdAt:now(),updatedAt:now()}; await this.#put(t,'runs',v); await this.#audit(t,a,'run.created',v.id); return v; }
   async getRun(t,id) { return this.#get(t,'runs',id); }
+  async listRuns(t) { return this.#list(t,'runs',100); }
   async updateRun(t,id,p,a='-') { const c=await this.#get(t,'runs',id); if(!c)return null; const v={...c,...p,id,updatedAt:now()}; await this.#put(t,'runs',v); await this.#audit(t,a,`run.${v.status}`,id); return v; }
   async createTask(t,i,a='-') { const run=await this.#get(t,'runs',i.runId); if(!run||run.status==='complete')return null; const v={id:`task_${randomUUID()}`,runId:i.runId,title:i.title,description:i.description,assigneeRole:i.assigneeRole,status:'open',result:null,createdAt:now(),updatedAt:now()}; await this.#put(t,'tasks',v); await this.#audit(t,a,'task.created',v.id); return v; }
   async listTasks(t,runId) { const snap=await this.#tenant(t).collection('tasks').where('runId','==',runId).limit(200).get(); return snap.docs.map(d=>d.data()); }

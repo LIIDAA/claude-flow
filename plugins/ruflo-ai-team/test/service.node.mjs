@@ -75,15 +75,17 @@ test('scope checks return HTTP 403 rather than model-level permission errors', a
 
 test('board resource is public but contains no tenant data; board tool remains scoped', async (t) => {
   const f=await fixture(); t.after(()=>f.server.close());
-  const uri='ui://ruflo-ai-team/board-v2.html';
+  const uri='ui://ruflo-ai-team/board-v4.html';
   const listed=await rpc(f.base,{jsonrpc:'2.0',id:1,method:'tools/list',params:{}});
   assert.equal(listed.body.result.tools.find(x=>x.name==='team_board')._meta.ui.resourceUri,uri);
+  assert.deepEqual(listed.body.result.tools.filter(x=>x._meta?.ui?.resourceUri).map(x=>x.name),['team_board']);
   const resource=await rpc(f.base,{jsonrpc:'2.0',id:2,method:'resources/read',params:{uri}});
   assert.equal(resource.status,200);
   assert.equal(resource.body.result.contents[0].mimeType,'text/html;profile=mcp-app');
   assert.doesNotMatch(resource.body.result.contents[0].text,/Bearer |tenant_id|api.key/i);
   assert.equal((await call(f.base,'team_board',{},null)).status,401);
-  assert.deepEqual((await call(f.base,'team_board',{},'alpha:all')).body.result.structuredContent.teams,[]);
+  const board=(await call(f.base,'team_board',{},'alpha:all')).body.result.structuredContent;
+  assert.deepEqual(board.teams,[]); assert.deepEqual(board.runs,[]);
 });
 
 test('run completion requires all tasks complete and preserves tenant isolation', async (t) => {
@@ -97,9 +99,16 @@ test('run completion requires all tasks complete and preserves tenant isolation'
   assert.equal(value(await call(f.base,'run_complete',{runId:run.id},'beta:all')).error,'not_found');
   assert.equal(value(await call(f.base,'run_complete',{runId:run.id},'alpha:all')).status,'complete');
   assert.equal(value(await call(f.base,'run_complete',{runId:run.id},'alpha:all')).status,'complete');
+  assert.equal((await call(f.base,'team_board',{},'alpha:all')).body.result.structuredContent.runs[0].id,run.id);
+  assert.deepEqual((await call(f.base,'team_board',{},'beta:all')).body.result.structuredContent.runs,[]);
   assert.equal(value(await call(f.base,'task_create',{runId:run.id,title:'Late',description:'No',assigneeRole:'verifier'},'alpha:all')).error,'not_found');
   assert.equal(value(await call(f.base,'task_update',{taskId:task.id,status:'open'},'alpha:all')).error,'not_found');
-  assert.equal(value(await call(f.base,'team_board',{runId:run.id},'alpha:all')).run.status,'complete');
+  const board=value(await call(f.base,'team_board',{runId:run.id},'alpha:all'));
+  assert.equal(board.run.status,'complete');
+  assert.equal(board.evidence.runId,run.id);
+  assert.equal(board.evidence.taskCount,1);
+  assert.ok(board.evidence.auditEvents>=1);
+  assert.equal(value(await call(f.base,'team_board',{runId:run.id},'beta:all')).error,'not_found');
 });
 
 test('tenant isolation hides foreign team and run identifiers', async (t) => {
