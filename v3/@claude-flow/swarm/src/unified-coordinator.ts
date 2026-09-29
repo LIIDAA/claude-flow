@@ -1687,6 +1687,15 @@ export class UnifiedSwarmCoordinator extends EventEmitter implements IUnifiedSwa
       domain = this.agentTypeToDomain(options.type);
       agentId = await this.registerAgent(agentData);
       this.agentDomainMap.set(agentId, domain);
+
+      // Add to domain pool so assignTaskToDomain() can route work to this
+      // agent (mirrors registerAgentWithDomain()'s pool.add() above; without
+      // this the agent is registered/idle but invisible to pool.acquire()).
+      const pool = this.domainPools.get(domain);
+      const agent = this.state.agents.get(agentId);
+      if (pool && agent) {
+        await pool.add(agent);
+      }
     }
 
     const duration = performance.now() - startTime;
