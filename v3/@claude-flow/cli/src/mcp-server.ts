@@ -175,6 +175,21 @@ function processStartToken(pid: number): string | undefined {
 }
 
 /**
+ * Hosts treated as same-machine-only for MCP HTTP tool-call authorization
+ * purposes (see startHttpServer's non-loopback authorization gate below).
+ */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+
+/**
+ * Explicit, documented opt-out of the non-loopback authorization gate in
+ * startHttpServer(). Exported for tests.
+ */
+export function isUnauthenticatedHttpAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = env.RUFLO_MCP_ALLOW_UNAUTHENTICATED_HTTP;
+  return v === '1' || v === 'true';
+}
+
+/**
  * Default configuration
  */
 const DEFAULT_OPTIONS: Required<MCPServerOptions> = {
@@ -950,6 +965,27 @@ export class MCPServerManager extends EventEmitter {
     // Use one MCP server with two HTTP transports for the localhost default.
     // Both loopback sockets therefore share sessions, tools, and notifications.
     const dualLoopback = this.options.host === 'localhost';
+    const isLoopbackHost = dualLoopback || LOOPBACK_HOSTS.has(this.options.host);
+    const allowUnauthenticatedHttp = isUnauthenticatedHttpAllowed(process.env);
+    if (!isLoopbackHost && !allowUnauthenticatedHttp) {
+      // No ToolAuthorizer is wired below: @claude-flow/mcp's tool-call
+      // authorization is fully opt-in (requireToolAuthorization/toolAuthorizer),
+      // so without this check every registered tool (memory_*, hooks_*,
+      // agentdb_*, hive-mind_*, ...) would be callable by any client that can
+      // reach this host:port, unauthenticated — the same shape as
+      // CVE-2026-81735 (CVSS 10/10, UI-TARS-desktop mcp-http-server: optional
+      // auth middleware never wired by the integrating CLI + a non-loopback
+      // bind). Loopback stays unaffected; this only gates an explicit
+      // non-default `--host`.
+      throw new Error(
+        `Refusing to start the MCP HTTP server on non-loopback host "${this.options.host}": ` +
+          'this server has no per-tool authorization by default, so every registered MCP tool ' +
+          'would be reachable unauthenticated over the network. Bind to a loopback host ' +
+          '(127.0.0.1, ::1, or localhost) instead, or set ' +
+          'RUFLO_MCP_ALLOW_UNAUTHENTICATED_HTTP=1 to acknowledge the risk and proceed ' +
+          '(e.g. when a trusted reverse proxy or network boundary already enforces auth).'
+      );
+    }
     const mcpServer = createMCPServer(
       {
         name: 'Claude-Flow MCP Server V3',
