@@ -16,7 +16,7 @@
 // common case, exercised by mcp-http-foreground-2984 and
 // mcp-http-protocol-tools-2990) is unchanged.
 
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -25,7 +25,16 @@ import { isUnauthenticatedHttpAllowed } from '../src/mcp-server.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.resolve(HERE, '..', 'bin', 'cli.js');
-const CLI_BUILT = fs.existsSync(CLI);
+// `bin/cli.js` is committed source and always present; what it actually
+// needs at runtime is the compiled `dist/src/index.js` it imports. This
+// repo's CI "Test Suite" job does not build @claude-flow/cli's own dist
+// (only @claude-flow/security and @claude-flow/cli-core get a targeted
+// build step there — see .github/workflows/ci.yml), so checking bin/cli.js
+// alone (the pattern mcp-http-foreground-2984/mcp-http-protocol-tools-2990
+// use) would report "built" when it isn't and fail every e2e spawn with
+// ERR_MODULE_NOT_FOUND. Check the real dependency instead and skip cleanly.
+const CLI_DIST_ENTRY = path.resolve(HERE, '..', 'dist', 'src', 'index.js');
+const CLI_BUILT = fs.existsSync(CLI) && fs.existsSync(CLI_DIST_ENTRY);
 const TEST_TMP = path.resolve(HERE, '..', '..', '..', '..', '.tmp-dream-2026-10-01', 'test-runtime');
 
 let child: ChildProcessWithoutNullStreams | undefined;
@@ -95,13 +104,7 @@ describe('isUnauthenticatedHttpAllowed (unit)', () => {
   });
 });
 
-describe('MCP HTTP non-loopback authorization gate (end-to-end)', () => {
-  beforeAll(() => {
-    if (!CLI_BUILT) {
-      throw new Error(`Built CLI required for end-to-end coverage: ${CLI}`);
-    }
-  });
-
+describe.skipIf(!CLI_BUILT)('MCP HTTP non-loopback authorization gate (end-to-end)', () => {
   it('refuses to start on a non-loopback host with no authorizer and no opt-out', async () => {
     const port = 38000 + Math.floor(Math.random() * 4000);
     child = spawnHttpCli(port, '0.0.0.0');
