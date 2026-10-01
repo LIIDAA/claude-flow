@@ -177,8 +177,15 @@ function processStartToken(pid: number): string | undefined {
 /**
  * Hosts treated as same-machine-only for MCP HTTP tool-call authorization
  * purposes (see startHttpServer's non-loopback authorization gate below).
+ * Deliberately exact-string matching only (no DNS resolution) so anything
+ * not spelled exactly one of these three fails closed rather than open.
  */
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+
+/** Exported for tests — see LOOPBACK_HOSTS. */
+export function isLoopbackHost(host: string): boolean {
+  return LOOPBACK_HOSTS.has(host);
+}
 
 /**
  * Explicit, documented opt-out of the non-loopback authorization gate in
@@ -187,6 +194,20 @@ const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 export function isUnauthenticatedHttpAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
   const v = env.RUFLO_MCP_ALLOW_UNAUTHENTICATED_HTTP;
   return v === '1' || v === 'true';
+}
+
+/**
+ * The full startHttpServer() authorization gate, as a pure function:
+ * true means "refuse to start" (see the thrown error for why). Extracted
+ * so the exact decision contract (not just its two inputs individually) is
+ * directly unit-testable without spawning a process or binding a port.
+ * Exported for tests.
+ */
+export function shouldRefuseUnauthenticatedHttp(
+  host: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return !isLoopbackHost(host) && !isUnauthenticatedHttpAllowed(env);
 }
 
 /**
@@ -965,9 +986,7 @@ export class MCPServerManager extends EventEmitter {
     // Use one MCP server with two HTTP transports for the localhost default.
     // Both loopback sockets therefore share sessions, tools, and notifications.
     const dualLoopback = this.options.host === 'localhost';
-    const isLoopbackHost = dualLoopback || LOOPBACK_HOSTS.has(this.options.host);
-    const allowUnauthenticatedHttp = isUnauthenticatedHttpAllowed(process.env);
-    if (!isLoopbackHost && !allowUnauthenticatedHttp) {
+    if (shouldRefuseUnauthenticatedHttp(this.options.host)) {
       // No ToolAuthorizer is wired below: @claude-flow/mcp's tool-call
       // authorization is fully opt-in (requireToolAuthorization/toolAuthorizer),
       // so without this check every registered tool (memory_*, hooks_*,
