@@ -348,12 +348,15 @@ export class EventStore extends EventEmitter {
     sql += ' ORDER BY timestamp ASC';
 
     // Pagination
-    if (filter.limit) {
+    if (filter.limit !== undefined) {
       sql += ' LIMIT ?';
       params.push(filter.limit);
+    } else if (filter.offset !== undefined) {
+      // SQLite requires LIMIT before OFFSET; -1 means no upper bound.
+      sql += ' LIMIT -1';
     }
 
-    if (filter.offset) {
+    if (filter.offset !== undefined) {
       sql += ' OFFSET ?';
       params.push(filter.offset);
     }
