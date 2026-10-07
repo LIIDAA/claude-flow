@@ -6,10 +6,11 @@
  * cache-write price, so event counts, timestamps and spend never reach the key.
  */
 import { plain } from './data/parse'
+import { MISSION_OBJECTIVE_MAX } from './full-text'
 import type { Derived, LedgerTask, MissionRecord } from './mission-types'
 
 export const CONTEXT_SECTION_ID = 'ruflo-console:mission'
-export const CONTEXT_MAX = 1200
+export const CONTEXT_MAX = MISSION_OBJECTIVE_MAX + 1200
 /** The settings key the row stores under, beside the other AI preferences. */
 export const CONTEXT_PREF_KEY = 'missionContext'
 
@@ -31,7 +32,7 @@ function halted(mission: MissionRecord): string | null {
 
 /** The section's text: deterministic, at most CONTEXT_MAX characters. `status` is the active task's derived status. */
 export function missionContextText(mission: MissionRecord, task: LedgerTask | null, loop: LoopInfo, status: TaskStatus = 'ready'): string {
-  const lines: string[] = [`Mission ${clip(mission.id, 40)}: ${clip(mission.objective, 200)}`]
+  const lines: string[] = [`Mission ${clip(mission.id, 40)}: ${clip(mission.objective, MISSION_OBJECTIVE_MAX)}`]
   const stop = halted(mission)
 
   if (task !== null) {
