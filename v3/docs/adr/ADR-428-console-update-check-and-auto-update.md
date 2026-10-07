@@ -97,5 +97,6 @@ The store (shared by sessions) keeps `update-checked-at`, `update-applying-at`, 
 The What's new page (ADR-478) reads this state to say whether a newer version is published, and adds no request of its own: the
 only network call in the update flow is the one `fetchText(MANIFEST_URL)` in `update-flow.ts`, a small file that holds `name` and
 `version` and nothing else (`versionFromManifest` accepts nothing more), so the page cannot get release notes from this check and does not
-try to. That the page makes no call of its own is ADR-478's side of the contract and was not checked here, because the page was
-being written on another branch when this note was made.
+try to. That the page makes no call of its own is ADR-478's side of the contract: its code holds no `fetchText`, `httpSend`, `run` or `spawn`
+(`plugins/ruflo-console/scripts/smoke.sh` step 18), and the page's "check for an update now" button is `act.checkUpdates`, this flow's own forced
+check. The band's `⬆ version available` link still goes to Settings, not to What's new.
