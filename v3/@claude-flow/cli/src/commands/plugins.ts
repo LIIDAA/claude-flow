@@ -20,6 +20,7 @@ import {
   type PluginType,
 } from '../plugins/store/index.js';
 import { getPluginManager, type InstalledPlugin } from '../plugins/manager.js';
+import { DEFAULT_PLUGIN_PERMISSIONS } from '../plugins/trust-policy.js';
 import { getBulkRatings } from '../services/registry-api.js';
 
 // List subcommand - Now uses IPFS-based registry
@@ -214,18 +215,30 @@ const installCommand: Command = {
     { name: 'version', short: 'v', type: 'string', description: 'Specific version to install' },
     { name: 'global', short: 'g', type: 'boolean', description: 'Install globally' },
     { name: 'dev', short: 'd', type: 'boolean', description: 'Install as dev dependency' },
-    { name: 'verify', type: 'boolean', description: 'Verify checksum (default: true)', default: true },
+    {
+      name: 'verify',
+      type: 'boolean',
+      description:
+        'Verify before registering (default: true). Registry installs must match the registry sha256 checksum. ' +
+        'Hooks and commands are withheld from a plugin that declares trustLevel "untrusted"/"unverified" or ' +
+        `permissions beyond the default set (${DEFAULT_PLUGIN_PERMISSIONS.join(', ')}) unless --trust is given. ` +
+        '--no-verify skips all of this.',
+      default: true,
+    },
+    { name: 'trust', type: 'boolean', description: 'Register hooks and commands even if the plugin is untrusted or declares elevated permissions', default: false },
     { name: 'registry', short: 'r', type: 'string', description: 'Registry to use' },
   ],
   examples: [
     { command: 'claude-flow plugins install -n community-analytics', description: 'Install plugin from IPFS' },
     { command: 'claude-flow plugins install -n ./my-plugin --dev', description: 'Install local plugin' },
+    { command: 'claude-flow plugins install -n ./my-plugin --trust', description: 'Install a local plugin that declares elevated permissions, registering its hooks' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const name = ctx.flags.name as string;
     const version = ctx.flags.version as string || 'latest';
     const registryName = ctx.flags.registry as string;
     const verify = ctx.flags.verify !== false;
+    const trust = ctx.flags.trust === true;
 
     if (!name) {
       output.printError('Plugin name is required');
@@ -264,7 +277,7 @@ const installCommand: Command = {
       if (isLocalPath) {
         // Install from local path
         spinner.setText(`Installing from ${name}...`);
-        result = await manager.installFromLocal(name);
+        result = await manager.installFromLocal(name, { verify, trust });
       } else {
         // First, try to find in registry for metadata
         spinner.setText(`Discovering ${name} in registry...`);
@@ -281,7 +294,13 @@ const installCommand: Command = {
 
         // Install from npm (since IPFS is demo mode)
         spinner.setText(`Installing ${name} from npm...`);
-        result = await manager.installFromNpm(name, version !== 'latest' ? version : undefined);
+        result = await manager.installFromNpm(name, version !== 'latest' ? version : undefined, {
+          verify,
+          trust,
+          expectedChecksum: plugin?.checksum,
+          registryTrustLevel: plugin?.trustLevel,
+          registryPermissions: plugin?.permissions,
+        });
       }
 
       if (!result.success) {
@@ -294,22 +313,44 @@ const installCommand: Command = {
 
       output.writeln();
 
+      if (result.decision?.verificationSkipped) {
+        output.printWarning('Verification skipped (--no-verify): hooks and commands were registered without a trust or checksum check.');
+      }
+      for (const warning of result.warnings ?? []) {
+        output.printWarning(warning);
+      }
+
       const boxContent = [
         `Plugin: ${installed.name}`,
         `Version: ${installed.version}`,
         `Source: ${installed.source}`,
         `Path: ${installed.path || 'N/A'}`,
         ``,
+        `Trust: ${installed.trustLevel ?? 'not declared'}`,
+        `Permissions: ${installed.permissions?.join(', ') || 'none declared'}`,
+        `Verification: ${installed.verification ?? 'n/a'}`,
+        `Install scripts: ${installed.source === 'local' ? 'n/a (local link)' : installed.scriptsRun ? 'ran' : 'skipped (use --trust to run)'}`,
+        ``,
         `Hooks registered: ${installed.hooks?.length || 0}`,
         `Commands added: ${installed.commands?.length || 0}`,
       ];
 
-      if (plugin) {
-        boxContent.push(`Trust: ${plugin.trustLevel}`);
-        boxContent.push(`Permissions: ${plugin.permissions.join(', ') || 'none'}`);
-      }
-
       output.printBox(boxContent.join('\n'), 'Installation Complete');
+
+      if (installed.withheld) {
+        output.writeln();
+        output.printWarning(
+          `Withheld ${installed.withheld.hooks.length} hook(s) and ${installed.withheld.commands.length} command(s) ` +
+          `from ${installed.name} because it ${installed.withheld.reasons.join('; ')}.`,
+        );
+        if (installed.withheld.hooks.length > 0) {
+          output.writeln(output.dim(`  Hooks not registered: ${installed.withheld.hooks.join(', ')}`));
+        }
+        if (installed.withheld.commands.length > 0) {
+          output.writeln(output.dim(`  Commands not added: ${installed.withheld.commands.join(', ')}`));
+        }
+        output.writeln(output.dim(`  To register them, uninstall and reinstall with --trust.`));
+      }
 
       return { success: true, data: installed };
     } catch (error) {

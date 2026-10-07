@@ -11,8 +11,11 @@ import { distillCommand } from './memory-distill.js';
 import { backupCommand } from './memory-backup.js';
 import { countSiblingStoreRows } from '../memory/sibling-store.js';
 import { resolveDbPath } from '../memory/memory-initializer.js';
+import { MAX_LIST_EMBEDDINGS } from '../memory/embedding-q8.js';
 import { existsSync } from 'node:fs';
 import { siblingAgentDbPath } from '../memory/memory-bridge.js';
+import { validateIdentifier } from '../mcp-tools/validate-input.js';
+import { memoryKeyError } from '../mcp-tools/memory-tools.js';
 
 /**
  * #3228: a miss in one store is not a miss in the memory.
@@ -24,11 +27,16 @@ import { siblingAgentDbPath } from '../memory/memory-bridge.js';
  * `found:false`. A confident negative is worse than an error, because nothing
  * prompts anyone to look further.
  */
-async function warnIfSiblingHasRows(pathFlag: unknown): Promise<void> {
+async function warnIfSiblingHasRows(pathFlag: unknown, hits?: number): Promise<void> {
   const unread = await countSiblingStoreRows(resolveDbPath(pathFlag as string | undefined));
   if (unread && unread.rows > 0) {
+    // #3566: disclose on hits too. A partial positive ("Found 1 results") invites
+    // no second look, so it is the more dangerous case, not the safer one.
+    const lead = hits === undefined
+      ? 'This read covered one store.'
+      : `Partial result: ${hits} ${hits === 1 ? 'match' : 'matches'} came from the store read here.`;
     output.printWarning(
-      `This read covered one store. ${unread.rows} entries are in ${unread.path} and were not searched. ` +
+      `${lead} ${unread.rows} entries are in ${unread.path} and were not searched. ` +
       `That store is written by the MCP/AgentDB path; read it with --path ${unread.path}.`,
     );
   }
@@ -54,7 +62,7 @@ function removalDbTargets(pathFlag?: string): Array<{ dbPath: string; encryptWri
 
 // Memory backends
 const BACKENDS = [
-  { value: 'agentdb', label: 'AgentDB', hint: 'Vector database with HNSW indexing (150x-12,500x faster)' },
+  { value: 'agentdb', label: 'AgentDB', hint: 'Vector database with HNSW indexing' },
   { value: 'sqlite', label: 'SQLite', hint: 'Lightweight local storage' },
   { value: 'hybrid', label: 'Hybrid', hint: 'SQLite + AgentDB (recommended)' },
   { value: 'memory', label: 'In-Memory', hint: 'Fast but non-persistent' }
@@ -191,6 +199,19 @@ const storeCommand: Command = {
 
     if (!value) {
       output.printError('Value is required. Use --value');
+      return { success: false, exitCode: 1 };
+    }
+
+    // #3570: reject a traversal namespace before persisting, as export/purge do.
+    const vNs = validateIdentifier(namespace, 'namespace');
+    if (!vNs.valid) {
+      output.printError(vNs.error!);
+      return { success: false, exitCode: 1 };
+    }
+    // #3570 follow-up: the same key rule MCP memory_store enforces.
+    const keyError = memoryKeyError(key);
+    if (keyError) {
+      output.printError(keyError);
       return { success: false, exitCode: 1 };
     }
 
@@ -354,6 +375,9 @@ const retrieveCommand: Command = {
       }
 
       const entry = result.entry;
+      // #3566: the same key may also live in the sibling store. Goes to stderr,
+      // so --value-only / --format json stdout stays parseable.
+      await warnIfSiblingHasRows(ctx.flags.path, 1);
 
       // #2073: --value-only emits just the raw value (no decoration) for
       // piping into JSON.parse / jq / other downstream parsers without
@@ -443,7 +467,7 @@ const searchCommand: Command = {
     },
     {
       name: 'build-hnsw',
-      description: 'Build/rebuild HNSW index before searching (enables 150x-12,500x speedup)',
+      description: 'Build/rebuild HNSW index before searching',
       type: 'boolean',
       default: false
     },
@@ -547,7 +571,6 @@ const searchCommand: Command = {
           const status = getHNSWStatus();
           output.printSuccess(`HNSW index built (${status.entryCount} vectors, ${buildTime}ms)`);
           output.writeln(output.dim(`  Dimensions: ${status.dimensions}, Metric: cosine`));
-          output.writeln(output.dim(`  Search speedup: ${status.entryCount > 10000 ? '12,500x' : status.entryCount > 1000 ? '150x' : '10x'}`));
         } else {
           output.printWarning('HNSW index not available (install @ruvector/core for acceleration)');
         }
@@ -611,6 +634,7 @@ const searchCommand: Command = {
           // Pure-keyword mode returns directly; skip the semantic path entirely.
           if (ctx.flags.format === 'json') {
             output.printJson({ query, searchType, results: keywordResults, searchTime: '0ms' });
+            await warnIfSiblingHasRows(ctx.flags.path, keywordResults.length);
             return { success: true, data: keywordResults };
           }
           output.writeln();
@@ -618,6 +642,7 @@ const searchCommand: Command = {
           for (const r of keywordResults) {
             output.writeln(`  ${r.key} (${r.namespace}, score=${r.score.toFixed(2)}) — ${r.preview.slice(0, 80)}${r.preview.length > 80 ? '…' : ''}`);
           }
+          await warnIfSiblingHasRows(ctx.flags.path, keywordResults.length);
           return { success: true, data: keywordResults };
         }
         // Hybrid mode: keyword hits will be MERGED after semantic runs below.
@@ -738,6 +763,7 @@ const searchCommand: Command = {
 
       if (ctx.flags.format === 'json') {
         output.printJson({ query, searchType, results, searchTime: `${searchTimeMs}ms`, ...(smartStats ? { stats: smartStats } : {}) });
+        await warnIfSiblingHasRows(ctx.flags.path, results.length);
         return { success: true, data: results };
       }
 
@@ -768,6 +794,7 @@ const searchCommand: Command = {
 
       output.writeln();
       output.printInfo(`Found ${results.length} results`);
+      await warnIfSiblingHasRows(ctx.flags.path, results.length);
 
       return { success: true, data: results };
     } catch (error) {
@@ -802,17 +829,24 @@ const listCommand: Command = {
       type: 'number',
       default: 20
     },
+    {
+      name: 'embeddings',
+      description: `ADR-472: with --format json, add each entry's stored embedding as int8+scale (embeddingQ8: {dims, scale, b64}); read-only, at most ${MAX_LIST_EMBEDDINGS} entries per call`,
+      type: 'boolean',
+      default: false
+    },
     DB_PATH_OPTION
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const namespace = ctx.flags.namespace as string;
     const limit = ctx.flags.limit as number;
+    const includeEmbedding = ctx.flags.embeddings === true && ctx.flags.format === 'json';
 
     // Use sql.js directly for consistent data access
     try {
       const { listEntries, resolveDbPath: _rdbList } = await import('../memory/memory-initializer.js');
       const dbPathList = _rdbList(ctx.flags.path as string | undefined);
-      const listResult = await listEntries({ namespace, limit, offset: 0, dbPath: dbPathList });
+      const listResult = await listEntries({ namespace, limit, offset: 0, dbPath: dbPathList, ...(includeEmbedding && { includeEmbedding: true }) });
 
       if (!listResult.success) {
         output.printError(`Failed to list: ${listResult.error}`);
@@ -1245,8 +1279,6 @@ const statsCommand: Command = {
         output.printInfo(`Provider info unavailable: ${e instanceof Error ? e.message : String(e)}`);
       }
 
-      output.writeln();
-      output.printInfo('V3 Performance: 150x-12,500x faster search with HNSW indexing');
 
       return { success: true, data: stats };
     } catch (error) {
