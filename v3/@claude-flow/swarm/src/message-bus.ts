@@ -241,6 +241,11 @@ export class MessageBus extends EventEmitter implements IMessageBus {
   // only, so a caller-configured processingIntervalMs is floored here
   // rather than driving per-tick dispatch directly (dream-cycle 2026-09-30).
   private static readonly MIN_BACKSTOP_INTERVAL_MS = 250;
+  // Retries used to be spaced by the poll interval (~10ms in production);
+  // event-driven dispatch would otherwise retry a failing handler back to
+  // back. Linear backoff (attempt * base), bounded by retryAttempts.
+  private static readonly RETRY_BACKOFF_BASE_MS = 10;
+  private retryTimers: Set<NodeJS.Timeout> = new Set();
 
   constructor(config: Partial<MessageBusConfig> = {}) {
     super();
@@ -281,6 +286,11 @@ export class MessageBus extends EventEmitter implements IMessageBus {
     // just iterated the now-empty queues Map), but it's cleaner to not
     // schedule work post-shutdown at all.
     this.isShutdown = true;
+
+    for (const timer of this.retryTimers) {
+      clearTimeout(timer);
+    }
+    this.retryTimers.clear();
 
     if (this.processingInterval) {
       clearInterval(this.processingInterval);
@@ -570,8 +580,20 @@ export class MessageBus extends EventEmitter implements IMessageBus {
       // drains — a failing broadcast subscriber's retries (and eventual
       // message.failed) are silently lost. Only the direct-message path
       // is bounded by this fix.
-      this.addToQueue(message.to, message, entry.attempts);
-      this.scheduleProcessing();
+      //
+      // The re-queue itself is delayed (not just the dispatch) so the
+      // backstop interval cannot pick the message up early either.
+      const backoffMs = MessageBus.RETRY_BACKOFF_BASE_MS * entry.attempts;
+      const timer = setTimeout(() => {
+        this.retryTimers.delete(timer);
+        if (this.isShutdown) {
+          return;
+        }
+        this.addToQueue(message.to, message, entry.attempts);
+        this.scheduleProcessing();
+      }, backoffMs);
+      timer.unref?.();
+      this.retryTimers.add(timer);
       this.emit('message.retry', {
         messageId: message.id,
         attempt: entry.attempts

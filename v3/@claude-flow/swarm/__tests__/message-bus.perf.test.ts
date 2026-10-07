@@ -1,44 +1,41 @@
 import { describe, it, expect, vi } from 'vitest';
 import { MessageBus, createMessageBus } from '../src/message-bus.js';
 
-// Dream Cycle 2026-09-30 (performance) real wall-clock evidence for the
-// MessageBus event-driven dispatch fix. These are sanity/regression bounds,
-// not the baseline-vs-candidate discriminator (that's
-// message-bus.event-driven.test.ts, run stash-isolated against baseline).
-// Numbers are logged so they can be copied into the dream-cycle gist/issue.
+// Dream Cycle 2026-09-30 (performance): regression bounds for the MessageBus
+// event-driven dispatch fix. Every assertion is a call-count bound derived
+// from the configured backstop floor or from the number of messages sent --
+// none depends on wall-clock ratios or on an unmeasured "pre-fix" baseline.
 
-describe('MessageBus - performance evidence (dream-cycle 2026-09-30)', () => {
-  it('idle-window processQueues() wakeups stay near the backstop floor at a production-matching interval', async () => {
+const spyProcessQueues = (bus: MessageBus) =>
+  vi.spyOn(bus as unknown as { processQueues: () => void }, 'processQueues');
+
+describe('MessageBus - dispatch cost bounds (dream-cycle 2026-09-30)', () => {
+  it('idle: processQueues() wakeups are bounded by the >=250ms backstop even when 10ms is configured', async () => {
     const bus = createMessageBus({ processingIntervalMs: 10 }); // matches UnifiedSwarmCoordinator/SwarmHub
-    const spy = vi.spyOn(bus as unknown as { processQueues: () => void }, 'processQueues');
+    const spy = spyProcessQueues(bus);
     await bus.initialize();
 
-    const windowMs = 2000;
+    const windowMs = 1000;
     await new Promise((resolve) => setTimeout(resolve, windowMs));
     await bus.shutdown();
 
-    const calls = spy.mock.calls.length;
-    const naiveBaselineCalls = Math.floor(windowMs / 10); // what the old 10ms poll would produce
-    const reduction = 1 - calls / naiveBaselineCalls;
-
-    console.log(
-      `[perf] idle-window (${windowMs}ms, processingIntervalMs=10): candidate=${calls} calls, ` +
-        `pre-fix-poll-equivalent=${naiveBaselineCalls} calls, reduction=${(reduction * 100).toFixed(1)}%`
-    );
-
-    expect(calls).toBeLessThanOrEqual(Math.ceil(windowMs / 250) + 1);
-    expect(reduction).toBeGreaterThan(0.9);
+    // The backstop interval is floored at 250ms, so at most ceil(1000/250)
+    // ticks (+1 for timer jitter) can occur with no traffic.
+    expect(spy.mock.calls.length).toBeLessThanOrEqual(Math.ceil(windowMs / 250) + 1);
   });
 
-  it('single-message delivery latency is near-instant (event-driven) at a production-matching interval', async () => {
+  it('sparse traffic: dispatch passes are bounded by messages sent, not by elapsed time', async () => {
     const bus = createMessageBus({ processingIntervalMs: 10 });
+    const spy = spyProcessQueues(bus);
     await bus.initialize();
-    bus.subscribe('agent-good', () => {});
 
-    const samples: number[] = [];
+    let delivered = 0;
+    bus.subscribe('agent-good', () => {
+      delivered++;
+    });
+
     const N = 20;
     for (let i = 0; i < N; i++) {
-      const start = performance.now();
       await new Promise<void>((resolve) => {
         bus.once('message.delivered', () => resolve());
         void bus.send({
@@ -51,23 +48,18 @@ describe('MessageBus - performance evidence (dream-cycle 2026-09-30)', () => {
           ttlMs: 60000,
         });
       });
-      samples.push(performance.now() - start);
     }
     await bus.shutdown();
 
-    const mean = samples.reduce((a, b) => a + b, 0) / N;
-    const max = Math.max(...samples);
-    console.log(
-      `[perf] single-message delivery latency (N=${N}, processingIntervalMs=10): mean=${mean.toFixed(3)}ms max=${max.toFixed(3)}ms`
-    );
-
-    // Old interval-driven dispatch averaged ~half the 10ms tick (~5ms) with
-    // worst case near 10ms; event-driven dispatch should land well under that.
-    expect(mean).toBeLessThan(5);
+    expect(delivered).toBe(N);
+    // One event-driven pass per message; one extra per backstop tick that
+    // could land during the (short) run is covered by the slack of N.
+    expect(spy.mock.calls.length).toBeLessThanOrEqual(2 * N);
   });
 
-  it('saturated-load throughput does not regress vs. the pre-fix batched-poll baseline', async () => {
+  it('saturated burst: all messages are delivered in about total/10 passes (per-agent batch cap), not one pass per message', async () => {
     const bus = createMessageBus({ processingIntervalMs: 10 });
+    const spy = spyProcessQueues(bus);
     await bus.initialize();
 
     let delivered = 0;
@@ -76,10 +68,9 @@ describe('MessageBus - performance evidence (dream-cycle 2026-09-30)', () => {
     });
 
     const TOTAL = 2000;
-    const start = performance.now();
-    const sendPromises: Promise<string>[] = [];
+    const sends: Promise<string>[] = [];
     for (let i = 0; i < TOTAL; i++) {
-      sendPromises.push(
+      sends.push(
         bus.send({
           type: 'direct',
           from: 'agent-sender',
@@ -91,27 +82,19 @@ describe('MessageBus - performance evidence (dream-cycle 2026-09-30)', () => {
         })
       );
     }
-    await Promise.all(sendPromises);
+    await Promise.all(sends);
 
-    // Drain: wait for delivery to catch up (event loop needs to process the
-    // setImmediate-scheduled processQueues()/deliverMessage() chain).
-    const deadline = performance.now() + 10000;
-    while (delivered < TOTAL && performance.now() < deadline) {
+    // Bounded drain wait (completion is the assertion, not its duration).
+    const deadline = Date.now() + 10000;
+    while (delivered < TOTAL && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
-    const elapsed = performance.now() - start;
     await bus.shutdown();
 
-    const throughput = TOTAL / (elapsed / 1000);
-    console.log(
-      `[perf] saturated throughput (N=${TOTAL}, processingIntervalMs=10): delivered=${delivered}/${TOTAL} ` +
-        `elapsed=${elapsed.toFixed(1)}ms throughput=${throughput.toFixed(0)} msg/s`
-    );
-
     expect(delivered).toBe(TOTAL);
-    // Module header targets 1000+ msgs/sec; regression threshold from the
-    // frozen hypothesis (<=5% vs baseline) is checked via the stash-isolated
-    // comparison recorded in the PR/issue — this is the standalone sanity floor.
-    expect(throughput).toBeGreaterThan(1000);
+    // processQueues() takes <=10 messages per agent per pass, so a full drain
+    // needs ~TOTAL/10 passes; a handful of extra backstop ticks is allowed.
+    expect(spy.mock.calls.length).toBeGreaterThanOrEqual(TOTAL / 10);
+    expect(spy.mock.calls.length).toBeLessThanOrEqual(TOTAL / 10 + 10);
   });
 });
