@@ -9,13 +9,16 @@
  * @module v3/cli/memory-initializer
  */
 
+import { loadBetterSqlite3 } from './shared-sqlite.js';
 import { liveMemoryRowSql } from './live-memory-row.js';
+import { encodeEmbeddingQ8, MAX_LIST_EMBEDDINGS, type EmbeddingQ8 } from './embedding-q8.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createRequire } from 'node:module';
 import { readFileMaybeEncrypted, writeFileAtomic, writeFileRestricted } from '../fs-secure.js';
 import { restoreMemoryDbFromBackup } from '../services/memory-backup.js';
+import { validateIdentifier } from '../mcp-tools/validate-input.js';
 
 /**
  * ADR-323 — typed memory provenance. Distinguishes WHO/WHAT wrote a memory
@@ -1604,8 +1607,8 @@ export async function recoverMemoryDatabase(
   try {
     // Module name behind a variable so TS does not statically resolve the
     // optional native dep's types at build time (CI may not install them).
-    const mod: string = 'better-sqlite3';
-    Database = (await import(mod)).default;
+    // #3693: same better-sqlite3 identity as AgentDB (see shared-sqlite.ts).
+    Database = await loadBetterSqlite3();
   } catch {
     return await restoreFromBackup('no-native');
   }
@@ -1721,8 +1724,8 @@ export async function repairVectorIndexes(
   try {
     // Module name behind a variable so TS does not statically resolve the
     // optional native dep's types at build time (CI may not install them).
-    const mod: string = 'better-sqlite3';
-    Database = (await import(mod)).default;
+    // #3693: same better-sqlite3 identity as AgentDB (see shared-sqlite.ts).
+    Database = await loadBetterSqlite3();
   } catch {
     // Native module absent (e.g. WASM-only host). Statusline fix still covers
     // the display; nothing to repair here.
@@ -3423,6 +3426,8 @@ export async function listEntries(options: {
   includeContent?: boolean;
   /** ADR-323: restrict rows to these provenance types. */
   provenanceFilter?: string[];
+  /** ADR-472: include each entry's embedding as int8+scale (`embeddingQ8`); at most MAX_LIST_EMBEDDINGS rows. Read-only. */
+  includeEmbedding?: boolean;
 }): Promise<{
   success: boolean;
   entries: {
@@ -3437,6 +3442,8 @@ export async function listEntries(options: {
     /** #2073: Present when `includeContent: true` was requested. */
     content?: string;
     provenanceType?: string;
+    /** ADR-472: present when `includeEmbedding: true` and the row has a valid stored vector. */
+    embeddingQ8?: EmbeddingQ8;
   }[];
   total: number;
   error?: string;
@@ -3519,7 +3526,7 @@ export async function listEntries(options: {
     const total = countResult[0]?.values?.[0]?.[0] as number || 0;
 
     // Get entries
-    const safeLimit = parseInt(String(limit), 10) || 100;
+    const safeLimit = Math.min(parseInt(String(limit), 10) || 100, options.includeEmbedding ? MAX_LIST_EMBEDDINGS : Number.MAX_SAFE_INTEGER);
     const safeOffset = parseInt(String(offset), 10) || 0;
     // #2120 — same NULL-as-active acceptance as the count above.
     const listStmt = db.prepare(
@@ -3545,6 +3552,7 @@ export async function listEntries(options: {
       hasEmbedding: boolean;
       content?: string;
       provenanceType?: string;
+      embeddingQ8?: EmbeddingQ8;
     }[] = [];
 
     if (result[0]?.values) {
@@ -3563,6 +3571,7 @@ export async function listEntries(options: {
           hasEmbedding: boolean;
           content?: string;
           provenanceType?: string;
+          embeddingQ8?: EmbeddingQ8;
         } = {
           // #2073: don't truncate id when content is requested — callers
           // (notably memory_export) need the full id to round-trip via import.
@@ -3578,6 +3587,10 @@ export async function listEntries(options: {
         };
         if (options.includeContent) {
           entry.content = content || '';
+        }
+        if (options.includeEmbedding) {
+          const q8 = encodeEmbeddingQ8(embedding);
+          if (q8) entry.embeddingQ8 = q8;
         }
         entries.push(entry);
       }
@@ -3992,8 +4005,6 @@ export async function withMemoryDbLock<T>(dbPath: string, fn: () => Promise<T> |
   }
 }
 
-const NAMESPACE_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
-
 export async function purgeNamespace(options: {
   namespace: string;
   dbPath?: string;
@@ -4007,8 +4018,11 @@ export async function purgeNamespace(options: {
 }> {
   const { namespace, dbPath: customPath } = options;
 
-  if (!NAMESPACE_PATTERN.test(namespace)) {
-    return { success: false, deletedCount: 0, remainingEntries: 0, error: `Invalid namespace: ${namespace}` };
+  // #3570: the same validator store, import and export use, so any namespace
+  // that can be written can also be purged (`team:alice` included).
+  const vNs = validateIdentifier(namespace, 'namespace');
+  if (!vNs.valid) {
+    return { success: false, deletedCount: 0, remainingEntries: 0, error: `Invalid namespace: ${vNs.error}` };
   }
 
   const swarmDir = getMemoryRoot();

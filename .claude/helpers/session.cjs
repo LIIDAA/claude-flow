@@ -118,7 +118,7 @@ if (require.main === module) {
   if (command && commands[command]) {
     commands[command](...args);
   } else {
-    console.log('Usage: session.js <start|restore|end|status|metric>');
+    console.log('Usage: session.cjs <start|restore|end|status|metric>');
     console.log(`Platform: ${platform}`);
     console.log(`Data dir: ${SESSION_DIR}`);
   }

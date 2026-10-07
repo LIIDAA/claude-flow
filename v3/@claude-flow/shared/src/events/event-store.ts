@@ -422,10 +422,13 @@ export class EventStore extends EventEmitter {
       'SELECT * FROM snapshots WHERE aggregate_id = ? ORDER BY version DESC LIMIT 1'
     );
 
-    const row = stmt.getAsObject([aggregateId]);
+    stmt.bind([aggregateId]);
+    // sql.js getAsObject() yields undefined-valued column keys when no row matched,
+    // so step first and treat absence explicitly.
+    const row = stmt.step() ? stmt.getAsObject() : null;
     stmt.free();
 
-    if (!row || Object.keys(row).length === 0) {
+    if (!row) {
       return null;
     }
 

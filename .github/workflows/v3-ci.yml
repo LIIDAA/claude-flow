@@ -459,6 +459,14 @@ jobs:
           cache: 'pnpm'
           cache-dependency-path: v3/pnpm-lock.yaml
 
+      # When a better-sqlite3/hnswlib-node prebuild download times out, node-gyp
+      # compiles from source, and macos-latest's Python 3.12 has no distutils.
+      - name: Setup Python for node-gyp (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Install dependencies
         working-directory: v3
         run: pnpm install --frozen-lockfile

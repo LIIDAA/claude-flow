@@ -893,12 +893,53 @@ const KEYWORD_MATCHERS = Object.entries(KEYWORD_PATTERNS).map(([keyword, result]
   return { regex: new RegExp(`\\b${body}\\b`, 'i'), result };
 });
 
+/**
+ * Confidence for a task nothing matched (#3567). It must rank below every real
+ * signal: keyword hits are >= 0.8, learned outcomes >= 0.7, and a semantic
+ * match is only eligible above 0.4. Matches the helper router's 0.3 fall-through.
+ */
+export const NO_MATCH_CONFIDENCE = 0.3;
+
+export interface TaskAgentSuggestion {
+  agents: string[];
+  confidence: number;
+  /** false when no keyword or learned pattern matched; the agents are a default, not a decision. */
+  matched: boolean;
+  reason?: 'no-match-default';
+  note?: string;
+}
+
+/** True when the task has at least one letter or digit in any script. */
+export function hasRoutableText(task: string): boolean {
+  return /[\p{L}\p{N}]/u.test(task);
+}
+
+// Keyword matchers are English regexes; letters outside Latin script can never hit them.
+const NON_LATIN_LETTER = /(?![A-Za-zÀ-ɏ])\p{L}/u;
+
+function noMatchNote(task: string): string {
+  if (!hasRoutableText(task)) return 'Task has no words to match.';
+  if (NON_LATIN_LETTER.test(task)) {
+    return 'Keyword matchers are English-only, so non-English text cannot match them.';
+  }
+  return 'No keyword or learned pattern matched.';
+}
+
 /** Exported for tests. */
-export function suggestAgentsForTask(task: string): { agents: string[]; confidence: number } {
+export function suggestAgentsForTask(task: string): TaskAgentSuggestion {
+  const noMatch = (): TaskAgentSuggestion => ({
+    agents: ['coder', 'researcher', 'tester'],
+    confidence: NO_MATCH_CONFIDENCE,
+    matched: false,
+    reason: 'no-match-default',
+    note: noMatchNote(task),
+  });
+  if (!hasRoutableText(task)) return noMatch();
+
   // Check static keyword patterns first
   for (const { regex, result } of KEYWORD_MATCHERS) {
     if (regex.test(task)) {
-      return result;
+      return { ...result, matched: true };
     }
   }
 
@@ -920,12 +961,11 @@ export function suggestAgentsForTask(task: string): { agents: string[]; confiden
 
     // Require at least 2 keyword overlap to prevent false positives
     if (bestAgent && bestOverlap >= 2) {
-      return { agents: [bestAgent], confidence: Math.min(0.6 + bestOverlap * 0.05, 0.85) };
+      return { agents: [bestAgent], confidence: Math.min(0.6 + bestOverlap * 0.05, 0.85), matched: true };
     }
   }
 
-  // Default fallback
-  return { agents: ['coder', 'researcher', 'tester'], confidence: 0.7 };
+  return noMatch();
 }
 
 function assessCommandRisk(command: string): { risk: string; level: number; warnings: string[] } {
@@ -1387,6 +1427,7 @@ async function routeTaskLocal(
     let agents: string[];
     let confidence: number;
     let matchedPattern = '';
+    let noMatchDetail: string | null = null;
 
     // Both static and learned patterns are gated on the same similarity
     // score. Learned patterns additionally require support/reliability as a
@@ -1395,7 +1436,9 @@ async function routeTaskLocal(
     // (#2864: a 25pp higher threshold made a top-scoring learned-researcher
     // match at 0.57 lose to a static match at 0.52, discarding the learned
     // store's output on the majority of routes).
-    const eligibleSemantic = semanticResult.find((match) => {
+    // A task with no letters or digits has nothing for the embedder to mean;
+    // any similarity it scores is noise, so it never becomes a semantic match.
+    const eligibleSemantic = !hasRoutableText(task) ? undefined : semanticResult.find((match) => {
       if (match.score <= 0.4) return false;
       const learned = match.intent.startsWith('learned-') || match.metadata.source === 'learned';
       if (!learned) return true;
@@ -1412,9 +1455,15 @@ async function routeTaskLocal(
       const suggestion = suggestAgentsForTask(task);
       agents = suggestion.agents;
       confidence = suggestion.confidence;
-      matchedPattern = 'keyword-fallback';
       routingMethod = 'keyword';
-      backendInfo = 'keyword matching';
+      if (suggestion.matched) {
+        matchedPattern = 'keyword-fallback';
+        backendInfo = 'keyword matching';
+      } else {
+        matchedPattern = 'no-match-default';
+        backendInfo = 'keyword matching (no match)';
+        noMatchDetail = suggestion.note ?? 'No pattern matched.';
+      }
     }
 
     // Determine complexity
@@ -1434,6 +1483,9 @@ async function routeTaskLocal(
         throughput: routingLatencyMs > 0 ? `${Math.round(1000 / routingLatencyMs)} routes/s` : 'N/A',
       },
       matchedPattern,
+      // #3567: callers branch on `matched`; a no-match result is a default, not a decision.
+      matched: noMatchDetail === null,
+      ...(noMatchDetail !== null ? { reason: 'no-match-default', note: noMatchDetail } : {}),
       semanticMatches: semanticResult.slice(0, 3).map(r => ({
         pattern: r.intent,
         score: Math.round(r.score * 100) / 100,
@@ -1443,15 +1495,18 @@ async function routeTaskLocal(
         confidence: Math.round(confidence * 100) / 100,
         reason: routingMethod.startsWith('semantic')
           ? `Semantic similarity to "${matchedPattern}" pattern (${Math.round(confidence * 100)}%)`
-          : `Task contains keywords matching ${agents[0]} specialization`,
+          : noMatchDetail !== null
+            ? `Nothing matched; default suggestion only. ${noMatchDetail}`
+            : `Task contains keywords matching ${agents[0]} specialization`,
       },
       alternativeAgents: agents.slice(1).map((agent, i) => ({
         type: agent,
-        confidence: Math.round((confidence - (0.1 * (i + 1))) * 100) / 100,
-        reason: `Alternative agent for ${agent} capabilities`,
+        confidence: Math.max(0, Math.round((confidence - (0.1 * (i + 1))) * 100) / 100),
+        reason: noMatchDetail !== null ? 'Default suggestion (nothing matched)' : `Alternative agent for ${agent} capabilities`,
       })),
       estimatedMetrics: {
-        successProbability: Math.round(confidence * 100) / 100,
+        // No pattern means no basis for a success estimate.
+        successProbability: noMatchDetail !== null ? null : Math.round(confidence * 100) / 100,
         estimatedDuration: complexity === 'high' ? '2-4 hours' : complexity === 'medium' ? '30-60 min' : '10-30 min',
         complexity,
       },
@@ -1710,12 +1765,15 @@ export const hooksPreTask: MCPTool = {
     return {
       taskId,
       description,
+      agentsMatched: suggestion.matched,
       suggestedAgents: suggestion.agents.map((agent, i) => ({
         type: agent,
         confidence: suggestion.confidence - (0.05 * i),
-        reason: i === 0
-          ? `Primary agent for ${agent} tasks based on learned patterns`
-          : `Alternative agent with ${agent} capabilities`,
+        reason: !suggestion.matched
+          ? 'Default suggestion (nothing matched)'
+          : i === 0
+            ? `Primary agent for ${agent} tasks based on learned patterns`
+            : `Alternative agent with ${agent} capabilities`,
       })),
       complexity,
       estimatedDuration: complexity === 'high' ? '2-4 hours' : complexity === 'medium' ? '30-60 min' : '10-30 min',
@@ -2053,8 +2111,35 @@ export const hooksExplain: MCPTool = {
       // File unreadable; leave as null
     }
 
+    // #3567: when nothing matched, say so instead of explaining a match that did not happen.
+    if (!suggestion.matched) {
+      return {
+        task,
+        matched: false,
+        reason: 'no-match-default',
+        explanation: `No keyword or learned pattern matched this task. ${suggestion.note ?? ''} ` +
+          `"${suggestion.agents[0]}" is a default suggestion, not a routing decision.`.trim(),
+        factors: [
+          { factor: 'Keyword Match', weight: 0.4, value: null, impact: 'No keyword matched' },
+          { factor: 'Historical Success', weight: 0.3, value: historicalSuccess, impact: historicalNote },
+          { factor: 'Agent Availability', weight: 0.2, value: null, impact: 'Agent availability tracking not implemented' },
+          { factor: 'Task Complexity', weight: 0.1, value: task.length > 100 ? 0.8 : 0.3, impact: 'Complexity assessment' },
+        ],
+        patterns: matchedPatterns,
+        decision: {
+          agent: suggestion.agents[0],
+          confidence: suggestion.confidence,
+          reasoning: [
+            'No pattern matched; the agent is a default suggestion',
+            `Confidence ${(suggestion.confidence * 100).toFixed(0)}% is below every real match`,
+          ],
+        },
+      };
+    }
+
     return {
       task,
+      matched: true,
       explanation: `The routing decision was made based on keyword analysis of the task description. ` +
         `The task contains keywords that match the "${suggestion.agents[0]}" specialization with ${(suggestion.confidence * 100).toFixed(0)}% confidence.`,
       factors: [
@@ -3516,7 +3601,7 @@ export const hooksPatternStore: MCPTool = {
 
     // Fallback: persist using memory-initializer store
     let storeResult: { success: boolean; id?: string; embedding?: { dimensions: number; model: string }; error?: string } = { success: false };
-    if (!reasoningResult) {
+    if (!reasoningResult?.success) {
       const storeFn = await getRealStoreFunction();
       if (storeFn) {
         try {

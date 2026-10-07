@@ -827,7 +827,7 @@ const routeCommand: Command = {
     const parallel = Math.max(2, parallelRaw);
     const consensus = (ctx.flags.consensus as string) || 'majority-vote';
 
-    if (!task) {
+    if (!task || !task.trim()) {
       output.printError('Task description is required. Use --task or -t flag.');
       return { success: false, exitCode: 1 };
     }
@@ -845,6 +845,9 @@ const routeCommand: Command = {
           throughput: string;
         };
         matchedPattern?: string;
+        /** #3567: false when nothing matched; the agent shown is only a default. */
+        matched?: boolean;
+        note?: string;
         semanticMatches?: Array<{
           pattern: string;
           score: number;
@@ -860,7 +863,7 @@ const routeCommand: Command = {
           reason: string;
         }>;
         estimatedMetrics: {
-          successProbability: number;
+          successProbability: number | null;
           estimatedDuration: string;
           complexity: 'low' | 'medium' | 'high';
         };
@@ -939,13 +942,14 @@ const routeCommand: Command = {
       }
 
       output.writeln();
+      const noMatch = result.matched === false;
       output.printBox(
         [
           `Agent: ${output.highlight(result.primaryAgent.type)}`,
-          `Confidence: ${(result.primaryAgent.confidence * 100).toFixed(1)}%`,
+          `Confidence: ${(result.primaryAgent.confidence * 100).toFixed(1)}%${noMatch ? ' (no match: default only)' : ''}`,
           `Reason: ${result.primaryAgent.reason}`
         ].join('\n'),
-        'Primary Recommendation'
+        noMatch ? 'Default Suggestion (nothing matched)' : 'Primary Recommendation'
       );
 
       if (result.alternativeAgents.length > 0) {
@@ -965,7 +969,9 @@ const routeCommand: Command = {
         output.writeln();
         output.writeln(output.bold('Estimated Metrics'));
         output.printList([
-          `Success Probability: ${(result.estimatedMetrics.successProbability * 100).toFixed(1)}%`,
+          `Success Probability: ${result.estimatedMetrics.successProbability === null
+            ? 'unknown (nothing matched)'
+            : `${(result.estimatedMetrics.successProbability * 100).toFixed(1)}%`}`,
           `Estimated Duration: ${result.estimatedMetrics.estimatedDuration}`,
           `Complexity: ${result.estimatedMetrics.complexity.toUpperCase()}`
         ]);
