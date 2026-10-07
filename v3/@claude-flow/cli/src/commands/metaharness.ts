@@ -288,6 +288,7 @@ export const metaharnessCommand: Command = {
       'verbose', 'v',
       'quiet', 'q',
       'help', 'h',
+      'interactive', 'i', // CLI-only default; plugin scripts are non-interactive
     ]);
     // Parser normalizes kebab-case → camelCase (--per-dimension → perDimension).
     // Plugin scripts expect kebab-case at argv, so we re-kebab here.

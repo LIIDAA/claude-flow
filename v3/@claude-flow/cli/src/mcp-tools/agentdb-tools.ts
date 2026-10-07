@@ -1,3 +1,4 @@
+import { feedbackPatternsSchema, validateFeedbackPatterns } from '../memory/feedback-patterns.js';
 /**
  * AgentDB MCP Tools — Phase 6 of ADR-053
  *
@@ -72,11 +73,6 @@ async function getBridge() {
 // Lazy-cached modules used by graph-query / graph-pathfinder dispatch.
 // Caching the resolved namespace avoids per-call dynamic-import overhead
 // in the ADR-130 hot path (smoke harness measures elapsedMs of every call).
-let graphBackendMod: typeof import('../ruvector/graph-backend.js') | null = null;
-async function getGraphBackend() {
-  if (!graphBackendMod) graphBackendMod = await import('../ruvector/graph-backend.js');
-  return graphBackendMod;
-}
 let graphEdgeWriterMod: typeof import('../memory/graph-edge-writer.js') | null = null;
 async function getGraphEdgeWriter() {
   if (!graphEdgeWriterMod) graphEdgeWriterMod = await import('../memory/graph-edge-writer.js');
@@ -166,6 +162,10 @@ export const agentdbPatternStore: MCPTool = {
 
       const bridge = await getBridge();
       const result = await bridge.bridgeStorePattern({ pattern, type, confidence });
+      if (result && result.success === false) {
+        // #3691: the write was refused/not persisted — never acknowledge it.
+        return { success: false, error: `Pattern store failed: ${result.error ?? 'write not persisted'}`, controller: result.controller };
+      }
       if (result) {
         // #3288: `controller: 'reasoningBank'` is the ONLY label that means
         // the healthy path ran. Every other label bridgeStorePattern can
@@ -192,12 +192,20 @@ export const agentdbPatternStore: MCPTool = {
         const { storeEntry } = await import('../memory/memory-initializer.js');
         const patternId = `pattern-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const value = JSON.stringify({ pattern, type, confidence, _fallback: 'reasoningBank-unavailable' });
-        await storeEntry({
+        const stored = await storeEntry({
           key: patternId,
           value,
           namespace: 'pattern',
           tags: [type, 'reasoning-pattern', 'fallback'],
         });
+        // #3691: storeEntry reports failure as {success:false}, not a throw.
+        if (!stored || stored.success !== true) {
+          return {
+            success: false,
+            error: `Pattern store failed: memory_store fallback did not persist (${stored?.error ?? 'no result'})`,
+            recommendation: 'Run agentdb_health to inspect controller registration and check that .swarm/memory.db is writable.',
+          };
+        }
         return {
           success: true,
           // #3288: a caller must not have to already know to distrust a
@@ -389,6 +397,7 @@ export const agentdbFeedback: MCPTool = {
     type: 'object',
     properties: {
       taskId: { type: 'string', description: 'Task identifier' },
+      patterns: feedbackPatternsSchema,
       success: { type: 'boolean', description: 'Whether task succeeded' },
       quality: { type: 'number', description: 'Quality score (0-1)' },
       agent: { type: 'string', description: 'Agent that performed the task' },
@@ -402,9 +411,11 @@ export const agentdbFeedback: MCPTool = {
       if (params.agent) { const vAgent = validateIdentifier(params.agent, 'agent'); if (!vAgent.valid) return { success: false, error: vAgent.error }; }
       const taskId = validateString(params.taskId, 'taskId', 500);
       if (!taskId) return { success: false, error: 'taskId is required (non-empty string, max 500 chars)' };
+      const patterns = validateFeedbackPatterns(params.patterns);
       const bridge = await getBridge();
       const result = await bridge.bridgeRecordFeedback({
         taskId,
+        patterns,
         success: params.success === true,
         quality: validateScore(params.quality, 0.85),
         agent: validateString(params.agent, 'agent', 200) ?? undefined,
@@ -774,21 +785,18 @@ export const agentdbHierarchicalRecall: MCPTool = {
 
 export const agentdbConsolidate: MCPTool = {
   name: 'agentdb_consolidate',
-  description: 'Run memory consolidation to promote entries across tiers and compress old data Use when generic memory_* tools are wrong because you need AgentDB-specific controllers (HNSW vector search, hierarchical tiers, causal-graph links, pattern store/recall, RaBitQ quantization). For simple key-value persistence, memory_store/memory_retrieve are simpler. For unrelated file work, native Read/Write are fine.',
+  description: 'Request memory consolidation. Use when checking whether AgentDB can consolidate retained memories; native file edits cannot perform controller consolidation. Currently returns unsupported when the installed controller is a no-op stub; no entries are promoted or compressed in that case.',
   inputSchema: {
     type: 'object',
-    properties: {
-      minAge: { type: 'number', description: 'Minimum age in hours since store (optional)' },
-      maxEntries: { type: 'number', description: 'Maximum entries to consolidate (optional)' },
-    },
+    properties: {},
   },
   handler: async (params: Record<string, unknown>) => {
     try {
+      if (Object.keys(params).length > 0) {
+        return { success: false, status: 'unsupported', error: 'agentdb_consolidate does not support options' };
+      }
       const bridge = await getBridge();
-      const result = await bridge.bridgeConsolidate({
-        minAge: typeof params.minAge === 'number' ? Math.max(0, params.minAge) : undefined,
-        maxEntries: validatePositiveInt(params.maxEntries, 1000, 10_000),
-      });
+      const result = await bridge.bridgeConsolidate({});
       return result ?? { success: false, error: 'AgentDB bridge not available. Use memory_store/memory_search instead.' };
     } catch (error) {
       return { success: false, error: sanitizeError(error) };
@@ -1027,7 +1035,7 @@ interface ComplexityBudget {
 
 export const agentdbGraphQuery: MCPTool = {
   name: 'agentdb_graph-query',
-  description: 'Unified graph traversal across the knowledge graph (ADR-130). Dispatches to the most capable backend: graph-node native for k-hop, sql.js CTE for fallback, HNSW cosine for semantic, ruflo-graph-intelligence PageRank for pagerank mode. Use when you need structured graph traversal beyond flat memory search.',
+  description: 'Unified graph traversal across the knowledge graph (ADR-130). K-hop queries read committed graph_edges relationships through SQL; a separately populated native graph is not evidence of retained-history coverage. Inspect appliedDepth/truncated because SQL is bounded at 3 hops. maxNodesVisited bounds returned rows, not traversal work or elapsed time. Semantic and PageRank modes use their own backends. Use when you need relationship traversal beyond flat memory search.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1037,7 +1045,7 @@ export const agentdbGraphQuery: MCPTool = {
         enum: ['k-hop', 'semantic', 'pagerank'],
         description: 'Query mode: k-hop neighbor expansion, semantic cosine search, or PageRank scoring',
       },
-      depth: { type: 'number', description: 'Hop depth for k-hop mode (default 2, max 5)' },
+      depth: { type: 'number', description: 'Requested k-hop depth (default 2, max 5); SQL responses report appliedDepth and truncated when limited to 3' },
       topK: { type: 'number', description: 'Max results for semantic and pagerank modes (default 10)' },
       relation: { type: 'string', description: 'Optional edge relation filter' },
       complexityBudget: {
@@ -1068,54 +1076,49 @@ export const agentdbGraphQuery: MCPTool = {
 
       const budgetRaw = (params.complexityBudget ?? {}) as ComplexityBudget;
       const budget: Required<ComplexityBudget> = {
-        maxNodesVisited: budgetRaw.maxNodesVisited ?? 10_000,
-        maxDepth: budgetRaw.maxDepth ?? 5,
+        maxNodesVisited: validatePositiveInt(budgetRaw.maxNodesVisited, 10_000, 10_000),
+        maxDepth: validatePositiveInt(budgetRaw.maxDepth, 5, 5),
         maxMillis: budgetRaw.maxMillis ?? 50,
         maxMemoryMB: budgetRaw.maxMemoryMB ?? 32,
       };
-      const depth = Math.min(validatePositiveInt(params.depth, 2, budget.maxDepth), budget.maxDepth);
+      const requestedDepth = validatePositiveInt(params.depth, 2, 5);
+      const depth = Math.min(requestedDepth, budget.maxDepth);
       const topK = validatePositiveInt(params.topK, 10, MAX_TOP_K);
       const relation = validateString(params.relation, 'relation', 200) ?? undefined;
 
       // ── k-hop mode ──────────────────────────────────────────────────────────
       if (mode === 'k-hop') {
-        // Try graph-node native first
-        try {
-          const graphBackend = await getGraphBackend();
-          if (await graphBackend.isGraphBackendAvailable()) {
-            const neighbors = await graphBackend.getNeighbors(nodeId, depth);
-            return {
-              success: true, mode, nodeId, depth,
-              results: neighbors.map(id => ({ nodeId: id })),
-              count: neighbors.length,
-              backend: 'graph-node',
-              elapsedMs: Date.now() - t0,
-            };
-          }
-        } catch { /* fall through to sql.js */ }
-
-        // SQL CTE fallback for k-hop up to depth 3
+        // #3315: graph-node and retained SQL are populated independently.
+        // Native availability does not establish historical coverage. Query
+        // the committed relationship source, and fail if it cannot be read.
         try {
           const { getBridgeDb } = await getGraphEdgeWriter();
           const db = await getBridgeDb();
           if (db) {
-            const cteSql = buildKHopCTE(nodeId, Math.min(depth, 3), relation, budget.maxNodesVisited);
+            const appliedDepth = Math.min(depth, 3);
+            const cteSql = buildKHopCTE(nodeId, appliedDepth, relation, budget.maxNodesVisited + 1);
             // graph-edge-writer returns a better-sqlite3 Database after #2431.
             // `db.exec(sql, params)` (sql.js style) is a runner with no result
             // on better-sqlite3 — use `prepare(sql).raw().all(...)` to get the
             // same array-of-arrays shape the downstream code expects.
-            const rows = db.prepare(cteSql).raw().all() as unknown[][];
+            const allRows = db.prepare(cteSql).raw().all() as unknown[][];
+            const resultLimitReached = allRows.length > budget.maxNodesVisited;
+            const rows = allRows.slice(0, budget.maxNodesVisited);
+            const depthLimited = appliedDepth < requestedDepth;
             return {
-              success: true, mode, nodeId, depth,
+              success: true, mode, nodeId, depth, requestedDepth, appliedDepth,
+              depthLimited, resultLimitReached, truncated: depthLimited || resultLimitReached,
+              resultLimit: budget.maxNodesVisited,
               results: rows.map((r: unknown[]) => ({ nodeId: r[0], depth: r[1] })),
               count: rows.length,
               backend: 'sql-cte',
               elapsedMs: Date.now() - t0,
             };
           }
-        } catch { /* db unavailable */ }
-
-        return { success: false, error: 'No graph backend available for k-hop query', mode, nodeId };
+        } catch (error) {
+          return { success: false, error: `Retained SQL graph query failed: ${sanitizeError(error)}`, mode, nodeId };
+        }
+        return { success: false, error: 'Retained SQL graph_edges backend is unavailable for k-hop query', mode, nodeId };
       }
 
       // ── semantic mode ────────────────────────────────────────────────────────

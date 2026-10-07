@@ -247,7 +247,7 @@ const [,, command, ...args] = process.argv;
 if (command && commands[command]) {
   commands[command](...args);
 } else {
-  console.log('Usage: session.js <start|restore|end|status|update|metric> [args]');
+  console.log('Usage: session.cjs <start|restore|end|status|update|metric> [args]');
 }
 
 module.exports = commands;
@@ -289,7 +289,7 @@ const AGENT_CAPABILITIES = {
 // the whitespace acts as a natural boundary.
 const TASK_PATTERNS = [
   { tokens: ['implement', 'create', 'build', 'add', 'write code', 'refactor', 'debug'], agent: 'coder' },
-  { tokens: ['test', 'tests', 'spec', 'coverage', 'unit test', 'integration test'], agent: 'tester' },
+  { tokens: ['test', 'tests', 'testing', 'spec', 'specs', 'coverage', 'unit test', 'integration test'], agent: 'tester' },
   { tokens: ['review', 'audit', 'check', 'validate', 'security'], agent: 'reviewer' },
   { tokens: ['research', 'find', 'search', 'documentation', 'explore'], agent: 'researcher' },
   { tokens: ['design', 'architect', 'architecture', 'structure', 'plan'], agent: 'architect' },
@@ -335,15 +335,16 @@ function routeTask(task) {
   };
 }
 
-// CLI
-const task = process.argv.slice(2).join(' ');
-
-if (task) {
-  const result = routeTask(task);
-  console.log(JSON.stringify(result, null, 2));
-} else {
-  console.log('Usage: router.js <task description>');
-  console.log('\\nAvailable agents:', Object.keys(AGENT_CAPABILITIES).join(', '));
+// CLI — only when executed directly, not when require()d by hook-handler.cjs
+if (require.main === module) {
+  const task = process.argv.slice(2).join(' ');
+  if (task) {
+    const result = routeTask(task);
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log('Usage: router.cjs <task description>');
+    console.log('\\nAvailable agents:', Object.keys(AGENT_CAPABILITIES).join(', '));
+  }
 }
 
 module.exports = { routeTask, AGENT_CAPABILITIES, TASK_PATTERNS, buildPattern };
@@ -433,12 +434,144 @@ const value = valueParts.join(' ');
 if (command && commands[command]) {
   commands[command](key, value);
 } else {
-  console.log('Usage: memory.js <get|set|delete|clear|keys> [key] [value]');
+  console.log('Usage: memory.cjs <get|set|delete|clear|keys> [key] [value]');
 }
 
 module.exports = commands;
 `;
 }
+
+// Literal-word root guard mirrored in the mod and both shipped classic helpers.
+const ROOT_DELETE_CHECK_SOURCE = String.raw`function hasRootDelete(command, depth = 0) {
+  let word = '', quote = '', started = false, redirect = false
+  let ansiNul = false // a NUL inside $'...' ends that string, as in bash
+  let inRm = false, optionsEnded = false, recursive = false, force = false, root = false
+  const isRoot = (operand) => {
+    if (!operand.startsWith('/')) return false
+    const parts = []
+    for (const part of operand.split('/')) {
+      if (!part || part === '.') continue
+      if (part === '..') parts.pop()
+      else parts.push(part)
+    }
+    return parts.length === 0 || /[*?\[]/.test(parts[0])
+  }
+  // One backslash escape inside $'...', from the character after the backslash.
+  // Returns the text it stands for and the index of its last character. An unknown escape keeps its backslash.
+  // The command arrives lowercased, so an uppercase-U escape reads as a lowercase one: eight digits starting 0000 are one code point.
+  const ansiEscape = (s, at) => {
+    const c = s[at]
+    const simple = { a: '\x07', b: '\b', e: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' }
+    if (simple[c] !== undefined) return [simple[c], at]
+    const digits = (from, max, pattern) => pattern.exec(s.slice(from, from + max))?.[0]
+    const octal = digits(at, 3, /^[0-7]+/)
+    if (octal) return [String.fromCharCode(parseInt(octal, 8) & 255), at + octal.length - 1]
+    const hex = c === 'x' ? digits(at + 1, 2, /^[0-9a-f]+/) : undefined
+    if (hex) return [String.fromCharCode(parseInt(hex, 16)), at + hex.length]
+    const wide = c === 'u' ? (digits(at + 1, 8, /^0000[0-9a-f]{4}$/) ?? digits(at + 1, 4, /^[0-9a-f]+/)) : undefined
+    if (wide) return [String.fromCodePoint(parseInt(wide, 16)), at + wide.length]
+    if (c === 'c' && at + 1 < s.length) return [String.fromCharCode(s.charCodeAt(at + 1) & 31), at + 1]
+    return ['\\' + c, at]
+  }
+  const finishWord = () => {
+    if (!started) return false
+    // Literal shell strings (e.g. sh -c 'rm -rf /') also carried the old guard.
+    // Bound rescanning to four levels; beyond that retain its conservative check.
+    if (/[\s;&|()\x60]/.test(word)) {
+      if (depth < 4 ? hasRootDelete(word, depth + 1) : word.includes('rm -rf /')) return true
+    }
+    if (!inRm) inRm = word === 'rm' || word.endsWith('/rm')
+    else if (!optionsEnded && word === '--') optionsEnded = true
+    else if (!optionsEnded && word.startsWith('-')) {
+      // GNU getopt accepts any unambiguous long-option prefix: --r, --recur, --forc.
+      recursive = recursive || (word.length > 2 && '--recursive'.startsWith(word)) || /^-[a-z]*r[a-z]*$/.test(word)
+      force = force || (word.length > 2 && '--force'.startsWith(word)) || /^-[a-z]*f[a-z]*$/.test(word)
+    } else root = root || isRoot(word)
+    word = ''; started = false
+    return inRm && recursive && force && root
+  }
+  // A command substitution's body, from just after its opening backtick. Bash removes a
+  // backslash only before $, a backtick or a backslash (and " inside double quotes) and
+  // drops backslash-newline; any other backslash stays for the nested scan.
+  const substitution = (from, inDouble) => {
+    let body = '', j = from
+    for (; j < command.length && command[j] !== '\x60'; j++) {
+      const next = command[j + 1]
+      if (command[j] === '\\' && j + 1 < command.length) {
+        if (next === '\n') { j++; continue }
+        if (next === '$' || next === '\x60' || next === '\\' || (inDouble && next === '"')) { body += next; j++; continue }
+      }
+      body += command[j]
+    }
+    return [j, depth < 4 ? hasRootDelete(body, depth + 1) : body.includes('rm -rf /')]
+  }
+  const finishCommand = () => {
+    const denied = inRm && recursive && force && root
+    inRm = optionsEnded = recursive = force = root = false
+    return denied
+  }
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]
+    const redirectionAmpersand = char === '&' && (redirect || command[i + 1] === '>')
+    redirect = false
+    if (quote) {
+      if (quote === "$'") {
+        if (char === "'") { quote = ''; ansiNul = false }
+        else if (char === '\\' && i + 1 < command.length) {
+          const [text, last] = ansiEscape(command, i + 1)
+          i = last
+          if (!ansiNul) { const nul = text.indexOf('\0'); if (nul < 0) word += text; else { word += text.slice(0, nul); ansiNul = true } }
+        } else if (!ansiNul) word += char
+        continue
+      }
+      if (char === quote) quote = ''
+      else if (quote === '"' && char === '\x60' && command.indexOf('\x60', i + 1) > i) {
+        const [end, denied] = substitution(i + 1, true)
+        if (denied) return true
+        // The substitution is gone from the word, as bash's empty output is (a quoted empty substitution glued to -rf leaves -rf).
+        // A # right after it is still inside the word: a placeholder keeps a rescan (sh -c "...")
+        // from reading it as the start of a comment.
+        if (command[end + 1] === '#') word += '\u0001'
+        i = end
+      }
+      else if (quote === '"' && char === '\\' && i + 1 < command.length &&
+        (command[i + 1] === '"' || command[i + 1] === '\\' || command[i + 1] === '$' ||
+          command.charCodeAt(i + 1) === 96 || command[i + 1] === '\n')) {
+        const next = command[++i]
+        if (next !== '\n') word += next
+      } else word += char
+      continue
+    }
+    if (char === '\\' && i + 1 < command.length) {
+      const next = command[++i]
+      if (next !== '\n') { word += next; started = true }
+    } else if (char === '\x60' && command.indexOf('\x60', i + 1) > i) {
+      // Command substitution: scan the body as its own command; the substitution
+      // stays inside the enclosing word, so the rm being parsed keeps its state,
+      // and the word has started (a # right after it is not a comment).
+      const [end, denied] = substitution(i + 1, false)
+      if (denied) return true
+      i = end; started = true
+    } else if (char === '$' && (command[i + 1] === "'" || command[i + 1] === '"')) {
+      // ANSI-C ($'...': escapes decoded) and locale ($"...") quoting: the $ is not part of the word.
+      quote = command[i + 1] === "'" ? "$'" : '"'; started = true; i++
+    } else if (char === '"' || char === "'") {
+      quote = char; started = true
+    } else if (char === '#' && !started) {
+      while (i < command.length && command[i] !== '\n') i++
+      if (finishCommand()) return true
+    } else if (char === ' ' || char === '\t' || char === '\r' || char === '\n' ||
+      ';|&()<>'.includes(char)) {
+      if (finishWord()) return true
+      // Redirections separate words, but later operands still belong to rm.
+      redirect = char === '<' || char === '>'
+      if (!redirectionAmpersand && (char === '\n' || ';|&()'.includes(char)) && finishCommand()) return true
+    } else {
+      word += char; started = true
+    }
+  }
+  return finishWord() || finishCommand()
+}`;
 
 /**
  * Generate hook-handler.cjs (cross-platform hook dispatcher)
@@ -511,9 +644,9 @@ export function generateHookHandler(): string {
     '  return null;',
     '}',
     '',
-    "const router = safeRequire(path.join(helpersDir, 'router.js'));",
-    "const session = safeRequire(path.join(helpersDir, 'session.js'));",
-    "const memory = safeRequire(path.join(helpersDir, 'memory.js'));",
+    "const router = safeRequire(path.join(helpersDir, 'router.cjs'));",
+    "const session = safeRequire(path.join(helpersDir, 'session.cjs'));",
+    "const memory = safeRequire(path.join(helpersDir, 'memory.cjs'));",
     "const intelligence = safeRequire(path.join(helpersDir, 'intelligence.cjs'));",
     '',
     'const [,, command, ...args] = process.argv;',
@@ -537,7 +670,19 @@ export function generateHookHandler(): string {
     '  });',
     '}',
     '',
+    // ADR-404: same handshake as the shipped hook-handler.cjs, so a helper
+    // regenerated by the refresh fallback still hands route/post-edit to the mod.
+    '// ADR-404: the ruflo mod names the events it runs in-process in',
+    '// RUFLO_MODS_OWNS; only side-effect events hand over, guards always run.',
+    "const MOD_OWNABLE_EVENTS = new Set(['route', 'post-edit']);",
+    'function ownedByMod(cmd, env) {',
+    '  env = env || process.env;',
+    '  if (!MOD_OWNABLE_EVENTS.has(cmd)) return false;',
+    "  return String(env.RUFLO_MODS_OWNS || '').split(',').some(function (owned) { return owned.trim() === cmd; });",
+    '}',
+    '',
     'async function main() {',
+    '  if (ownedByMod(command)) return;',
     '  let stdinData = "";',
     '  try { stdinData = await readStdin(); } catch (e) { /* ignore */ }',
     '  let hookInput = {};',
@@ -564,13 +709,14 @@ export function generateHookHandler(): string {
     '    }',
     '    if (router && router.routeTask) {',
     '      const result = router.routeTask(prompt);',
+    "      const row = (text) => '| ' + text.substring(0, 60).padEnd(60) + ' |';",
     '      var output = [];',
     "      output.push('[INFO] Routing task: ' + (prompt.substring(0, 80) || '(no prompt)'));",
     "      output.push('');",
     "      output.push('+------------------- Primary Recommendation -------------------+');",
-    "      output.push('| Agent: ' + result.agent.padEnd(53) + '|');",
-    "      output.push('| Confidence: ' + (result.confidence * 100).toFixed(1) + '%' + ' '.repeat(44) + '|');",
-    "      output.push('| Reason: ' + result.reason.substring(0, 53).padEnd(53) + '|');",
+    "      output.push(row('Agent: ' + result.agent));",
+    "      output.push(row('Confidence: ' + (result.confidence * 100).toFixed(1) + '%'));",
+    "      output.push(row('Reason: ' + (result.reason || '')));",
     "      output.push('+--------------------------------------------------------------+');",
     "      console.log(output.join('\\n'));",
     '    } else {',
@@ -630,12 +776,14 @@ export function generateHookHandler(): string {
     '  },',
     '',
     "  'pre-bash': () => {",
-    '    var cmd = prompt.toLowerCase();',
+    "    var cmd = String(hookInput.command || toolInputObj.command || prompt || '').toLowerCase();",
     "    var dangerous = ['rm -rf /', 'format c:', 'del /s /q c:\\\\', ':(){:|:&};:'];",
+    ROOT_DELETE_CHECK_SOURCE.split('\n').map((line) => '    ' + line).join('\n'),
     '    for (var i = 0; i < dangerous.length; i++) {',
-    '      if (cmd.includes(dangerous[i])) {',
+    "      if (dangerous[i] === 'rm -rf /' ? hasRootDelete(cmd) : cmd.includes(dangerous[i])) {",
     "        console.error('[BLOCKED] Dangerous command detected: ' + dangerous[i]);",
-    '        process.exit(1);',
+    '        // Claude Code PreToolUse: exit 2 blocks execution; exit 1 is non-blocking.',
+    '        process.exit(2);',
     '      }',
     '    }',
     "    console.log('[OK] Command validated');",
@@ -759,6 +907,7 @@ export function generateHookHandler(): string {
     '}',
     '} // end main',
     '',
+    '// Non-blocking hooks exit 0; pre-bash denials exit 2 before normal completion.',
     'process.exitCode = 0;',
     'main().catch(() => {}).finally(() => { process.exit(0); });',
   ];
@@ -1014,12 +1163,14 @@ export function generateAutoMemoryHook(): string {
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const PROJECT_ROOT = join(__dirname, '../..');
+const PROJECT_ROOT = process.env.CLAUDE_PROJECT_DIR
+  ? resolve(process.env.CLAUDE_PROJECT_DIR)
+  : join(__dirname, '../..');
 const DATA_DIR = join(PROJECT_ROOT, '.claude-flow', 'data');
 const STORE_PATH = join(DATA_DIR, 'auto-memory-store.json');
 
@@ -1368,7 +1519,7 @@ const [,, command, ...args] = process.argv;
 if (command && commands[command]) {
   commands[command](...args);
 } else {
-  console.log('Usage: session.js <start|restore|end|status>');
+  console.log('Usage: session.cjs <start|restore|end|status>');
   console.log(\`Platform: \${platform}\`);
   console.log(\`Data dir: \${SESSION_DIR}\`);
 }
@@ -1389,9 +1540,9 @@ export function generateHelpers(options: InitOptions): Record<string, string> {
     helpers['post-commit'] = generatePostCommitHook();
 
     // Cross-platform Node.js scripts
-    helpers['session.js'] = generateCrossPlatformSessionManager();
-    helpers['router.js'] = generateAgentRouter();
-    helpers['memory.js'] = generateMemoryHelper();
+    helpers['session.cjs'] = generateCrossPlatformSessionManager();
+    helpers['router.cjs'] = generateAgentRouter();
+    helpers['memory.cjs'] = generateMemoryHelper();
 
     // Windows-specific scripts
     helpers['daemon-manager.ps1'] = generateWindowsDaemonManager();
@@ -1434,34 +1585,192 @@ export function generateRufloHookCjs(): string {
  *
  * Always exits 0 — hook subcommands are best-effort telemetry and must
  * never block a Claude Code turn.
+ *
+ * Windows argv integrity: hook-derived values (a Bash tool's \`command\`, a file path) must
+ * reach the CLI as literal argv and never as shell syntax. Two layers, in
+ * this order:
+ *
+ *   1. resolveInvocation() maps the command to a real executable — and on
+ *      Windows maps npm's .cmd shim to the package's own .js entrypoint —
+ *      so the spawn runs \`node <entry>\` with shell:false and NO cmd.exe in
+ *      the chain at all. Nothing to escape, nothing to re-tokenize, and no
+ *      %VAR% expansion. (The escaped fallback was measured on a real
+ *      windows-latest runner and does pass %VAR% through literally; layer 1
+ *      is still preferred because it removes the parser rather than
+ *      out-guessing it.)
+ *   2. escapeCmdArg() guards the residual Windows path where step 1 cannot
+ *      identify an entrypoint. Escaping is strictly the weaker layer: it is
+ *      only reachable when resolution fails, and it is the one part of this
+ *      file that a non-Windows CI run cannot prove.
  */
 
 'use strict';
 
-const { spawnSync, execSync } = require('child_process');
+const { spawnSync } = require('child_process');
 const fs = require('fs');
+const path = require('path');
 
 function done() { process.exit(0); }
 
-function commandExists(cmd) {
-  try {
-    const r = execSync(
-      process.platform === 'win32' ? 'where ' + cmd : 'command -v ' + cmd,
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
-    );
-    return r.trim().length > 0;
-  } catch { return false; }
+/** Case-insensitive env lookup — Windows env keys are not case-stable. */
+function envValue(env, name) {
+  const key = Object.keys(env).find((c) => c.toLowerCase() === name.toLowerCase());
+  return key ? env[key] : undefined;
 }
 
-function invokeHook(bin, binArgs, hookArgs, stdinData) {
-  const args = [...binArgs, ...hookArgs];
-  const result = spawnSync(bin, args, {
-    shell: process.platform === 'win32',
+/**
+ * Locate a command on PATH using fs only.
+ *
+ * Deliberately NOT \`execSync('where ...')\` / \`command -v\`: that spawns a
+ * shell on every hook invocation, which is both the thing this file is
+ * trying to get away from and a per-turn cost. Taking \`env\` and \`platform\`
+ * as arguments is what lets the Windows branch be exercised from a
+ * Linux/macOS CI run — see the Windows argv tests.
+ */
+function resolveCommandPath(command, env = process.env, platform = process.platform) {
+  const hasSeparator = command.includes('/') || command.includes('\\\\');
+  const dirs = hasSeparator
+    ? ['']
+    : (envValue(env, 'PATH') || '').split(platform === 'win32' ? ';' : path.delimiter);
+  const hasExtension = path.extname(command) !== '';
+  const extensions = platform === 'win32' && !(hasSeparator && hasExtension)
+    ? (envValue(env, 'PATHEXT') || '.COM;.EXE;.BAT;.CMD').split(';')
+    : [''];
+  for (const dir of dirs) {
+    for (const ext of extensions) {
+      const base = path.resolve(dir || '.', command);
+      const candidates = ext
+        ? [base + ext.toLowerCase(), base + ext.toUpperCase()]
+        : [base];
+      for (const file of candidates) {
+        try {
+          fs.accessSync(file, platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
+          if (fs.statSync(file).isFile()) return file;
+        } catch { /* keep searching */ }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Map an npm-generated Windows shim (ruflo.cmd / npx.cmd / …) to the .js
+ * entrypoint it would have run, so it can be executed as \`node <entry>\`
+ * with no shell.
+ *
+ * Handles both npm layouts: a global prefix (\`<prefix>/ruflo.cmd\` beside
+ * \`<prefix>/node_modules/ruflo\`) and a local one (\`node_modules/.bin/ruflo.cmd\`
+ * beside \`node_modules/ruflo\`). \`npx\` lives in the \`npm\` package, hence the
+ * command→package mapping rather than assuming they match.
+ *
+ * The entrypoint comes from the package's own \`bin\` field, never a guessed
+ * filename, and is required to resolve inside the package directory — a
+ * manifest pointing outside it is refused rather than followed.
+ */
+function resolveNpmShim(shimPath) {
+  const command = path.basename(shimPath, path.extname(shimPath)).toLowerCase();
+  const packageName = command === 'npx' ? 'npm' : command;
+  if (!['ruflo', 'claude-flow', 'npm'].includes(packageName)) return null;
+  try {
+    const shimDir = path.dirname(shimPath);
+    const packageDir = path.basename(shimDir).toLowerCase() === '.bin'
+      ? path.resolve(shimDir, '..', packageName)
+      : path.resolve(shimDir, 'node_modules', packageName);
+    const manifest = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8'));
+    const declared = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.[command];
+    if (typeof declared !== 'string') return null;
+    const canonicalPackageDir = fs.realpathSync(packageDir);
+    const canonicalEntry = fs.realpathSync(path.resolve(packageDir, declared));
+    const relativeEntry = path.relative(canonicalPackageDir, canonicalEntry);
+    if (relativeEntry.startsWith('..' + path.sep) || path.isAbsolute(relativeEntry)) return null;
+    if (!fs.statSync(canonicalEntry).isFile()) return null;
+    return { command: process.execPath, args: [canonicalEntry] };
+  } catch { return null; }
+}
+
+/**
+ * Decide how to run \`bin\` without a shell. Returns {command, args}, or null
+ * when no shell-free invocation could be identified (Windows shim that is
+ * not an npm package entry) — the caller then falls back to the escaped
+ * cmd.exe path rather than dropping the hook.
+ */
+function resolveInvocation(bin, binArgs, options = {}) {
+  const env = options.env || process.env;
+  const platform = options.platform || process.platform;
+  const commandPath = resolveCommandPath(bin, env, platform);
+  if (!commandPath) return null;
+  if (platform === 'win32' && /\\.(?:cmd|bat|ps1)$/i.test(commandPath)) {
+    const npmBin = resolveNpmShim(commandPath);
+    return npmBin ? { command: npmBin.command, args: [...npmBin.args, ...binArgs] } : null;
+  }
+  return { command: commandPath, args: binArgs };
+}
+
+/**
+ * Escape one argv element so it survives BOTH parsers a Windows shell:true
+ * spawn puts it through before the target CLI ever sees it:
+ *   1. cmd.exe's own line tokenizer, which still scans for & | < > ^ % ! " ( )
+ *      even inside a per-argument quoted segment — quoting alone does not
+ *      shield cmd.exe metacharacters, and this runs a SECOND time when the
+ *      resolved binary is itself a .cmd shim (npm's \`ruflo\`/\`claude-flow\`/
+ *      \`npx\` global installs on Windows), because launching a .cmd file is
+ *      cmd.exe re-invoking itself on the command line.
+ *   2. The eventual CommandLineToArgvW argv parse in the target process,
+ *      which needs backslash-before-quote sequences doubled and the value
+ *      quoted so it lands as ONE argument.
+ * Without this, a hook-derived value (e.g. a Bash tool's \`command\`, or a
+ * file path) containing a shell metacharacter can be reinterpreted as a
+ * separate command / redirection instead of reaching the CLI as literal
+ * data — this is the class of bug in CVE-2024-27980 (Node's own .bat/.cmd
+ * argument-injection advisory). Algorithm: https://qntm.org/cmd, the same
+ * reference the \`cross-spawn\` package's Windows escaping is built from.
+ *
+ * Byte-identical to plugins/ruflo-core/scripts/ruflo-hook.cjs so the four
+ * copies can be diffed against each other. This is the fallback, not the
+ * primary defence: resolveInvocation() above is preferred because it removes
+ * cmd.exe from the chain entirely rather than out-guessing its tokenizer.
+ */
+function escapeCmdArg(arg) {
+  let s = String(arg);
+  s = s.replace(/(\\\\*)"/g, '$1$1\\\\"').replace(/(\\\\*)$/, '$1$1');
+  s = \`"\${s}"\`;
+  return s.replace(/[()%!^"<>&|;,]/g, '^$&');
+}
+
+function invokeHook(bin, binArgs, hookArgs, stdinData, options = {}) {
+  const env = options.env || process.env;
+  const platform = options.platform || process.platform;
+  const spawnOpts = {
     input: stdinData || '',
     encoding: 'utf8',
     stdio: ['pipe', 'ignore', 'ignore'],
     timeout: 30_000,
-  });
+    env,
+  };
+
+  // Layer 1: no shell. CreateProcess/execve receives the argv array
+  // verbatim, so nothing in it can be reinterpreted as syntax.
+  const invocation = resolveInvocation(bin, binArgs, { env, platform });
+  if (invocation) {
+    const result = spawnSync(invocation.command, [...invocation.args, ...hookArgs], {
+      ...spawnOpts,
+      shell: false,
+    });
+    return result.status === 0;
+  }
+
+  // Layer 2: Windows shim we could not map to an entrypoint. cmd.exe is
+  // unavoidable here (CreateProcess cannot launch a .cmd, and Node has
+  // refused to since CVE-2024-27980), so every element is escaped. Losing
+  // the hook entirely would be the wrong trade — telemetry is best-effort,
+  // but silently doing nothing hides breakage.
+  const useShell = platform === 'win32';
+  const args = [...binArgs, ...hookArgs];
+  const result = spawnSync(
+    useShell ? escapeCmdArg(bin) : bin,
+    useShell ? args.map(escapeCmdArg) : args,
+    { ...spawnOpts, shell: useShell },
+  );
   return result.status === 0;
 }
 
@@ -1476,12 +1785,20 @@ function main() {
 
   const hookArgs = ['hooks', subcommand, ...rest];
 
-  if (commandExists('ruflo')) { invokeHook('ruflo', [], hookArgs, stdinData); done(); }
-  if (commandExists('claude-flow')) { invokeHook('claude-flow', [], hookArgs, stdinData); done(); }
+  // Presence is checked separately from invocation strategy: a command that
+  // exists but cannot be resolved to an entrypoint still runs, via layer 2.
+  if (resolveCommandPath('ruflo')) { invokeHook('ruflo', [], hookArgs, stdinData); done(); }
+  if (resolveCommandPath('claude-flow')) { invokeHook('claude-flow', [], hookArgs, stdinData); done(); }
   invokeHook('npx', ['--prefer-offline', '--yes', 'ruflo@latest'], hookArgs, stdinData);
   done();
 }
 
-main();
+// Test seam: the Windows argv suite require()s this file to drive resolveInvocation()
+// and invokeHook() with a simulated { platform: 'win32', env } — which is how
+// the Windows branch is proved from a Linux/macOS CI run. hooks.json always
+// invokes this file directly, so main() runs unconditionally otherwise.
+if (!globalThis.__RUFLO_HOOK_IMPORT_ONLY__) main();
+
+module.exports = { invokeHook, resolveCommandPath, resolveInvocation, resolveNpmShim, escapeCmdArg };
 `;
 }

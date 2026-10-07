@@ -164,6 +164,8 @@ const isMCPMode = !process.stdin.isTTY
 if (isMCPMode) {
   // Run MCP server mode
   const { listMCPTools, callMCPTool, hasTool } = await import('../dist/src/mcp-client.js');
+  const { isPolicyEnforcementEnabled, loadMcpPolicy, evaluateToolCall } =
+    await import('../dist/src/mcp-tools/policy-enforcer.js');
 
   const VERSION = '3.0.0';
   const sessionId = `mcp-${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -287,12 +289,26 @@ if (isMCPMode) {
           };
         }
 
+        if (isPolicyEnforcementEnabled()) {
+          const check = evaluateToolCall(loadMcpPolicy(), sessionId, toolName);
+          if (!check.allowed) {
+            return {
+              jsonrpc: '2.0',
+              id: message.id,
+              error: { code: -32001, message: `Policy denied: ${check.reason}` },
+            };
+          }
+        }
+
         try {
           const result = await callMCPTool(toolName, toolParams, { sessionId });
+          // Failed task outcomes are data; an explicit handler error is a tool failure.
+          const isError = result !== null && typeof result === 'object'
+            && typeof result.error === 'string' && result.error.trim().length > 0;
           return {
             jsonrpc: '2.0',
             id: message.id,
-            result: { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] },
+            result: { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], isError },
           };
         } catch (error) {
           return {

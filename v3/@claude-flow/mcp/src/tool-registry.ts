@@ -372,23 +372,30 @@ export class ToolRegistry extends EventEmitter {
 
       const result = await metadata.tool.handler(input, execContext);
 
+      // CLI handlers return validation/runtime failures in-band. Preserve their
+      // payload while exposing the failure in the MCP envelope and metrics.
+      // A recorded task outcome with success:false alone is still valid data.
+      const isError = result !== null && typeof result === 'object'
+        && typeof (result as { error?: unknown }).error === 'string'
+        && (result as { error: string }).error.trim().length > 0;
+      if (isError) metadata.errorCount++;
       const duration = performance.now() - startTime;
       this.updateAverageExecutionTime(metadata, duration);
 
       this.logger.debug('Tool executed', {
         name,
         duration: `${duration.toFixed(2)}ms`,
-        success: true,
+        success: !isError,
       });
 
-      this.emit('tool:completed', { name, duration, success: true });
+      this.emit('tool:completed', { name, duration, success: !isError });
 
       return {
         content: [{
           type: 'text',
           text: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
         }],
-        isError: false,
+        isError,
       };
     } catch (error) {
       const duration = performance.now() - startTime;

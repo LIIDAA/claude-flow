@@ -47,6 +47,9 @@ jobs:
         with:
           node-version: '20'
 
+      - name: CLI help and invalid arguments have no side effects
+        run: node --test plugins/ruflo-metaharness/scripts/test-cli-help.mjs
+
       - name: Plugin structural smoke
         run: bash plugins/ruflo-metaharness/scripts/smoke.sh
 

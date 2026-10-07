@@ -53,14 +53,18 @@ const REPO_ROOT = resolve(__dirname, '..');
 const KNOWN_ESCAPE_HATCHES = new Set([
   // ── CI / test escape hatches ────────────────────────────────────────────────
   'CLAUDE_FLOW_DISABLE_BRIDGE',   // CI/test: force raw sql.js path — intentionally no CLI flag
+  'CLAUDE_FLOW_GRAPH_EDGE_IDLE_MS', // CI/test tuning: idle-close window (ms) for graph-edge-writer's native WAL handle (#3397). Internal lifecycle knob with a safe default (1000); no user-facing command owns it, so no CLI flag.
   'RUFLO_ADMIN_TOKEN',            // credential: the x.ruv.io gateway's OWN admin token, read by plugins/ruflo-x-gateway. Env-only by design — a secret must never be a CLI flag (shell history / process lists), and the gateway is a service with no typed command surface at all.
   'RUFLO_SERAPHINA_DAILY_CAP',    // gateway spend guard (#3275): shared daily Seraphina budget. Read by a long-running service, not a typed command — there is no invocation to attach a flag to.
   'RUFLO_SERAPHINA_IP_HOURLY_CAP',// gateway spend guard (#3275): per-client hourly Seraphina budget. Same service-only reasoning.
-  'RUFLO_X_ADMIN_TOKEN',          // credential: gateway admin token for x.ruv.io gateway-identity writes (x_federation_publish/invite_mint/admit). Env-only by design — a secret must never be a CLI flag (shell history / process lists). URL config (RUFLO_X_GATEWAY_URL) DOES take a flag: `ruflo federation --gateway`.
-  'SERAPHINA_METALLM_KEY',        // credential: cognitum meta-llm API key for seraphina_guidance. Env-only by design (same reasoning). URL config (SERAPHINA_METALLM_URL) takes the metaLlmUrl tool arg.
+  'RUFLO_X_GATEWAY_URL',          // Trust boundary: gateway reads/admin writes pin destinations to server config; MCP/CLI arguments cannot select another host.
+  'SERAPHINA_METALLM_URL',        // Trust boundary: credential-bearing Meta-LLM requests pin destinations to server config.
+  'RUFLO_X_ADMIN_TOKEN',          // credential: gateway admin token for x.ruv.io gateway-identity writes (x_federation_publish/invite_mint/admit). Env-only by design — a secret must never be a CLI flag (shell history / process lists). Gateway destination is trusted server config; --gateway/tool arguments must match it.
+  'SERAPHINA_METALLM_KEY',        // credential: cognitum meta-llm API key for seraphina_guidance. Env-only by design (same reasoning). Meta-LLM destination is trusted server config; metaLlmUrl must match it.
   'RUFLO_HOOK_SKIP_NPX',          // CI: suppress cold-install latency in smoke tests
   'RUFLO_HOOK_CLI_OVERRIDE',      // #2721 test-only: point plugins/ruflo-core/scripts/ruflo-hook.cjs at a local CLI build instead of the ruflo/claude-flow/npx PATH probe. Hook scripts have no CLI-flag surface (invoked by hooks.json, never a user-typed command)
   'RUFLO_HOOK_DEBUG_STDOUT',      // #2721 test-only: surface the invoked CLI's stdout/stderr from ruflo-hook.cjs instead of swallowing it, so test-hooks.mjs can assert on recorded values. Same no-CLI-surface reasoning as RUFLO_HOOK_CLI_OVERRIDE above — production never sets this
+  'RUFLO_MODS_OWNS',              // ADR-404 handshake, not configuration: the ruflo mod sets it on the Claude Code process with $.env.set, and hook-handler.cjs / ruflo-hook.cjs read it to stand down for route/post-edit. Hook scripts have no CLI-flag surface (invoked by settings/hooks.json), and a flag would defeat its purpose: only the running mod may set it
   'RUFLO_HOOK_UNIT_TEST',         // test-only: skip main() when ruflo-hook.cjs is require()'d by escape-cmd-arg.test.cjs, so the unit test can reach escapeCmdArg() without triggering the real hook flow / process.exit(0). Same no-CLI-surface reasoning — hooks.json always require()s this file directly, there is no invocation to attach a flag to
   'RUFLO_SUBLINEAR_NATIVE',       // Manual override for native vs WASM sublinear — CI/perf knob
   'RUFLO_METAHARNESS_CACHE_BASE', // CI/test seam: relocates the ~/.ruflo pinned-cache root in metaharness smoke tests — intentionally env-only, plugin scripts have no CLI-flag surface
@@ -81,6 +85,7 @@ const KNOWN_ESCAPE_HATCHES = new Set([
   'RUFLO_METAHARNESS_SKIP_LOCAL',   // plugins/ruflo-metaharness/scripts/_invoke.mjs — CI seam that forces the invoke shim off the local vendored metaharness and onto the pinned-cache resolver. Plugin script has no CLI-flag surface (invoked internally by MCP tools)
   'RUFLO_HELPERS_LOCKED',           // v3.30.0 — env-level opt-out for the .claude/helpers/ auto-refresh (init/helper-refresh.ts). Sibling to the `.LOCKED` marker file; helper-refresh runs from a hook, not a user-typed CLI command — no per-invocation flag surface. See CLAUDE.md "Concurrent-session helper corruption" for rationale
   'CLAUDE_FLOW_DISABLE_NATIVE_ROUTER', // Test/lock-constrained MCP escape hatch: forces hooks routing onto the deterministic pure-JS backend. The router is process-lifetime state, not owned by one CLI invocation.
+  'CLAUDE_FLOW_ROUTER_EMBEDDER',    // ADR-390/391: selects the hooks_route semantic-index embedder (minilm|hash; default hash). Same process-lifetime MCP router state as CLAUDE_FLOW_DISABLE_NATIVE_ROUTER — the index is built once per process, not per CLI invocation; the ADR-391 bench passes the embedder explicitly instead.
   'RUFLO_FLYWHEEL_ALLOW_BUILTIN_ANCHOR', // Explicit compatibility escape hatch for pre-ADR-331 downstream behavior. Intentionally env-only and visibly unsafe-by-choice; normal CLI/MCP use supplies a project anchor path + hash.
 
   // ── Embedding substrate toggles (3.25.x — opt-in tier + fail-closed ops flag) ─
@@ -162,6 +167,14 @@ const KNOWN_ESCAPE_HATCHES = new Set([
   // tuned by ops, not selected per-command. No CLI flag is wired because no
   // single CLI invocation owns the router's lifetime.
   'CLAUDE_FLOW_MAX_UNCERTAINTY',
+
+  // Added 2026-09-17 (Dream Cycle #3349/#3350): same operator-knob shape as
+  // CLAUDE_FLOW_MAX_UNCERTAINTY directly above — model-router's discounted-
+  // Thompson-sampling decay factor, tuned by ops across the router's whole
+  // persisted lifetime (.swarm/model-router-state.json), not selected per
+  // CLI invocation. envPriorDecay() in model-router.ts mirrors
+  // envMaxUncertainty() exactly, including this escape-hatch registration.
+  'CLAUDE_FLOW_PRIOR_DECAY',
 
   // ── MCP-tool-shaped tunables (param wins over env; env is documented fallback) ─
   // Added 2026-06-02 (ADR-089 #2246): memory_search_unified resolves namespaces

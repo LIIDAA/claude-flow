@@ -86,11 +86,22 @@ export class ConfigFileManager {
     }
     try {
       const content = fs.readFileSync(this.configPath, 'utf-8');
-      this.config = JSON.parse(content);
+      const parsed: unknown = JSON.parse(content);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new Error('Config file must contain a JSON object');
+      }
+      this.config = parsed as Record<string, unknown>;
       return this.config;
-    } catch {
+    } catch (error) {
       this.config = null;
-      return null;
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        this.configPath = null;
+        return null;
+      }
+      // A parse/read failure is not a missing config. In particular, set()
+      // must never replace a recoverable file with fallback defaults.
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to load config ${this.configPath}: ${detail}`);
     }
   }
 
@@ -105,13 +116,23 @@ export class ConfigFileManager {
   /** Get a nested config value by dot-separated key */
   get(cwd: string, key: string): unknown {
     const config = this.getConfig(cwd);
-    return getNestedValue(config, key);
+    return Object.hasOwn(config, key) ? config[key] : getNestedValue(config, key);
   }
 
   /** Set a nested config value by dot-separated key */
   set(cwd: string, key: string, value: unknown): void {
-    const config = this.getConfig(cwd);
-    setNestedValue(config, key, value);
+    // Reject the entire path before touching cached config or disk.
+    if (key.split('.').some(part => part === '__proto__' || part === 'constructor' || part === 'prototype')) {
+      throw new Error(`Unsafe configuration key: ${key}`);
+    }
+    // A targeted update must not persist unrelated defaults (notably the
+    // default memory path, which would relocate an existing memory store).
+    const config = this.config ?? this.load(cwd) ?? {};
+    if (Object.hasOwn(config, key)) {
+      config[key] = value;
+    } else {
+      setNestedValue(config, key, value);
+    }
     this.config = config;
     const targetPath = this.configPath ?? path.resolve(cwd, CONFIG_FILENAMES[0]);
     this.writeAtomic(targetPath, config);
@@ -196,7 +217,7 @@ function getNestedValue(obj: Record<string, unknown>, key: string): unknown {
   const parts = key.split('.');
   let current: unknown = obj;
   for (const part of parts) {
-    if (current === null || current === undefined || typeof current !== 'object') {
+    if (current === null || current === undefined || typeof current !== 'object' || !Object.hasOwn(current, part)) {
       return undefined;
     }
     current = (current as Record<string, unknown>)[part];
@@ -210,7 +231,7 @@ function setNestedValue(obj: Record<string, unknown>, key: string, value: unknow
   let current: Record<string, unknown> = obj;
   for (let i = 0; i < parts.length - 1; i++) {
     const part = parts[i];
-    if (!(part in current) || typeof current[part] !== 'object' || current[part] === null) {
+    if (!Object.hasOwn(current, part) || typeof current[part] !== 'object' || current[part] === null) {
       current[part] = {};
     }
     current = current[part] as Record<string, unknown>;

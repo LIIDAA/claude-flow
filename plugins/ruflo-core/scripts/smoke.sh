@@ -59,9 +59,14 @@ else
   bad "expected ≥25 distinct ruflo-* references, got $n"
 fi
 
-step "6. README pins @claude-flow/cli to v3.6"
-grep -qE "@claude-flow/cli.*v3\.6|v3\.6.*claude-flow/cli" "$ROOT/README.md" \
-  && ok || bad "Compatibility pin to v3.6 missing"
+# #3428: the launcher no longer pins to a fixed CLI minor line — it resolves a
+# built/installed @claude-flow/cli first and only falls back to `npx @latest`.
+# The compatibility contract now documents that resolution order instead of a
+# version pin; verify the README still describes it accurately.
+step "6. README documents the CLI resolution/fallback contract"
+grep -qE "RUFLO_MCP_CLI_OVERRIDE" "$ROOT/README.md" \
+  && grep -qE "RUFLO_MCP_SKIP_NPX" "$ROOT/README.md" \
+  && ok || bad "CLI resolution/fallback contract missing from README"
 
 step "7. README cross-references sibling contracts"
 F="$ROOT/README.md"

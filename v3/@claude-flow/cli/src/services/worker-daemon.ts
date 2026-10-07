@@ -11,10 +11,12 @@
  * - testgaps: Test coverage analysis (20 min interval)
  */
 
+import { ConfigFileManager } from './config-file-manager.js';
 import { EventEmitter } from 'events';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, appendFileSync, unlinkSync, renameSync } from 'fs';
 import { cpus } from 'os';
 import { join } from 'path';
+import { createRequire } from 'node:module';
 import { writeFileAtomic } from '../fs-secure.js';
 import {
   HeadlessWorkerExecutor,
@@ -34,6 +36,10 @@ import { backupMemoryDb } from './memory-backup.js';
 import { resolveGitWorkspaceIdentity, type GitWorkspaceIdentity } from './git-workspace-identity.js';
 import { getWorkspaceLeaseRegistry } from './workspace-lease.js';
 import { getRepoSupervisorRegistry, type SupervisorRecord } from './repo-supervisor.js';
+
+// Daemon config is read synchronously from the constructor. In an ESM build,
+// bare `require` is undefined, so use a module-relative require for YAML.
+const requireYaml = createRequire(import.meta.url);
 
 // Worker types matching hooks-tools.ts
 export type WorkerType =
@@ -473,8 +479,8 @@ export class WorkerDaemon extends EventEmitter {
   }
 
   /**
-   * Read daemon-specific config from .claude-flow/config.{json,yaml,yml}.
-   * Supports dot-notation keys like 'daemon.resourceThresholds.maxCpuLoad'.
+   * Read daemon-specific config from CLI JSON paths or .claude-flow/config.{yaml,yml}.
+   * Supports dotted and nested keys like 'daemon.resourceThresholds.maxCpuLoad'.
    * #1844: prefer JSON when both exist (existing behavior) but fall back
    * to YAML so operators using the v3 canonical YAML format aren't silently
    * ignored. The chosen path (or a parse warning) is returned rather than
@@ -497,7 +503,8 @@ export class WorkerDaemon extends EventEmitter {
     configSourcePath?: string;
     yamlParseWarning?: string;
   } {
-    const jsonPath = join(claudeFlowDir, 'config.json');
+    // Share the CLI's JSON search order, including root and explicit config files.
+    const jsonPath = new ConfigFileManager().findConfig(join(claudeFlowDir, '..'));
     const yamlPath = join(claudeFlowDir, 'config.yaml');
     const ymlPath = join(claudeFlowDir, 'config.yml');
 
@@ -505,7 +512,7 @@ export class WorkerDaemon extends EventEmitter {
     let raw: Record<string, any> | undefined;
     let chosenPath: string | undefined;
 
-    if (existsSync(jsonPath)) {
+    if (jsonPath) {
       try {
         raw = JSON.parse(readFileSync(jsonPath, 'utf-8'));
         chosenPath = jsonPath;
@@ -517,8 +524,7 @@ export class WorkerDaemon extends EventEmitter {
       try {
         // Lazy-load yaml so the daemon doesn't hard-require it; if the
         // dep isn't installed, fall back to the previous warn-only path.
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const yamlMod = require('yaml') as { parse(s: string): unknown };
+        const yamlMod = requireYaml('yaml') as { parse(s: string): unknown };
         const parsed = yamlMod.parse(readFileSync(yPath, 'utf-8'));
         if (parsed && typeof parsed === 'object') {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -537,21 +543,28 @@ export class WorkerDaemon extends EventEmitter {
     }
 
     try {
-      // Support both flat keys at root and nested under scopes.project
-      const cfg = raw?.scopes?.project ?? raw;
-      const rawCpuLoad = cfg['daemon.resourceThresholds.maxCpuLoad'] ?? raw['daemon.resourceThresholds.maxCpuLoad'];
-      const rawMinMem = cfg['daemon.resourceThresholds.minFreeMemoryPercent'] ?? raw['daemon.resourceThresholds.minFreeMemoryPercent'];
-      const rawMaxConcurrent = cfg['daemon.maxConcurrent'] ?? raw['daemon.maxConcurrent'];
-      const rawTimeout = cfg['daemon.workerTimeoutMs'] ?? raw['daemon.workerTimeoutMs'];
+      // The CLI writes nested objects; legacy files use dotted keys. Scoped
+      // values retain precedence, including explicit false and zero.
+      const read = (obj: Record<string, any> | undefined, key: string): unknown => {
+        if (!obj) return undefined;
+        return obj[key] ?? key.split('.').reduce((value, part) =>
+          value && typeof value === 'object' && Object.hasOwn(value, part) ? value[part] : undefined, obj as any);
+      };
+      const get = (key: string) => read(raw?.scopes?.project, key) ?? read(raw, key);
+      const rawAutoStart = get('daemon.autoStart');
+      const rawCpuLoad = get('daemon.resourceThresholds.maxCpuLoad');
+      const rawMinMem = get('daemon.resourceThresholds.minFreeMemoryPercent');
+      const rawMaxConcurrent = get('daemon.maxConcurrent');
+      const rawTimeout = get('daemon.workerTimeoutMs');
       // #2356 — lifecycle limits are configured in SECONDS in config.json
       // (`daemon.ttlSecs` / `daemon.idleSecs`) for parity with the CLI flag
       // and env var; stored internally as ms. An explicit 0 disables.
-      const rawTtl = cfg['daemon.ttlSecs'] ?? raw['daemon.ttlSecs'];
-      const rawIdle = cfg['daemon.idleSecs'] ?? raw['daemon.idleSecs'];
+      const rawTtl = get('daemon.ttlSecs');
+      const rawIdle = get('daemon.idleSecs');
       // #2661 — explicit opt-in for scheduled AI workers.
-      const rawAiEnabled = cfg['daemon.aiWorkers.enabled'] ?? raw['daemon.aiWorkers.enabled'];
+      const rawAiEnabled = get('daemon.aiWorkers.enabled');
       return {
-        autoStart: typeof raw['daemon.autoStart'] === 'boolean' ? raw['daemon.autoStart'] : undefined,
+        autoStart: typeof rawAutoStart === 'boolean' ? rawAutoStart : undefined,
         maxConcurrent: (typeof rawMaxConcurrent === 'number' && rawMaxConcurrent > 0) ? rawMaxConcurrent : undefined,
         workerTimeoutMs: (typeof rawTimeout === 'number' && rawTimeout > 0) ? rawTimeout : undefined,
         maxCpuLoad: (typeof rawCpuLoad === 'number' && rawCpuLoad > 0 && rawCpuLoad < 1000) ? rawCpuLoad : undefined,
@@ -1162,7 +1175,9 @@ export class WorkerDaemon extends EventEmitter {
       return `max age ${Math.round(ttlMs / 1000)}s reached`;
     }
     if (idleMs > 0) {
-      const lastActivity = this.lastWorkerActivityMs() ?? startedMs;
+      // Worker timestamps survive restarts; they cannot make this process
+      // idle before it has been alive for a full idle window (#3194).
+      const lastActivity = Math.max(this.lastWorkerActivityMs() ?? startedMs, startedMs);
       if (now - lastActivity >= idleMs) {
         return `idle for ${Math.round(idleMs / 1000)}s (no worker activity)`;
       }

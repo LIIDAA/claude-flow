@@ -163,32 +163,28 @@ function parseLinks(text, selfId) {
       }
     }
   }
-  // Body relationship lines. #2474 Bug 3: loosened to accept both colon
-  // placements (`**Supersedes:**` and `**Supersedes**:`) and an optional
-  // parenthetical qualifier like `**Supersedes (partial):**` — same
-  // tolerance as parseStatus.
-  //
-  // #2781 (Jordi-Izquierdo-DDS): a wrapped relation like
-  //   **Related**: ADR-124,
-  //   ADR-125
-  // silently dropped ADR-125 because `(.+)$` under /m only captures one
-  // physical line. Now capture the first line plus any continuation lines
-  // that don't look like the start of a new field (bold **Label**:), a
-  // heading (`##`), a horizontal rule (`---`), or a new list bullet.
-  // Safe because extractAdrRefs strips anything that isn't an ADR-NNN
-  // token, so over-capture into a plain-text continuation is harmless.
-  const REL = (label) => new RegExp(
-    `^[-*+]?\\s*\\*\\*${label}(?:\\s*\\([^)]*\\))?:?\\*\\*:?\\s*(.+(?:\\n(?!\\s*(?:\\*\\*[A-Za-z]|##|---|[-*+]\\s|\\d+\\.\\s))[^\\n]+)*)`,
-    'mi',
-  );
-  const supersedes = REL('Supersedes').exec(text);
-  if (supersedes) for (const ref of extractAdrRefs(supersedes[1])) out.push({ from: ref, to: selfId, relation: 'supersedes' });
-  const amended = REL('(?:Amended[ -]by|Amends)').exec(text);
-  if (amended) for (const ref of extractAdrRefs(amended[1])) out.push({ from: selfId, to: ref, relation: 'amends' });
-  const related = REL('Related').exec(text);
-  if (related) for (const ref of extractAdrRefs(related[1])) out.push({ from: selfId, to: ref, relation: 'related' });
-  const dependsOn = REL('Depends[ -]on').exec(text);
-  if (dependsOn) for (const ref of extractAdrRefs(dependsOn[1])) out.push({ from: selfId, to: ref, relation: 'depends-on' });
+  // Accept qualified labels, either colon placement, and repeated fields.
+  // Wrapped reference lists (#2781) remain supported, but narrative prose is
+  // not a continuation: incidental ADR mentions must not invent edges (#3096).
+  const values = (label) => {
+    const re = new RegExp(
+      `^[ \\t]*(?:[-*+]\\s+)?\\*\\*${label}(?=\\s|:|\\*\\*|/|\\()[^*\\r\\n]*\\*\\*:?[^\\S\\r\\n]*(.*)$`, 'gmi',
+    );
+    return [...text.matchAll(re)].map((match) => {
+      let value = match[1];
+      const rest = text.slice(match.index + match[0].length).split(/\r?\n/).slice(1);
+      for (const line of rest) {
+        const plain = line.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
+        if (!/\bADR-?\d+\b/i.test(plain) || !/^[\s,+;&]*$/.test(plain.replace(/\bADR-?\d+\b/gi, ''))) break;
+        value += `\n${line}`;
+      }
+      return value;
+    });
+  };
+  for (const value of values('Supersedes')) for (const ref of extractAdrRefs(value)) out.push({ from: ref, to: selfId, relation: 'supersedes' });
+  for (const value of values('(?:Amended[ -]by|Amends)')) for (const ref of extractAdrRefs(value)) out.push({ from: selfId, to: ref, relation: 'amends' });
+  for (const value of values('(?:Related|Relates)')) for (const ref of extractAdrRefs(value)) out.push({ from: selfId, to: ref, relation: 'related' });
+  for (const value of values('Depends[ -]on')) for (const ref of extractAdrRefs(value)) out.push({ from: selfId, to: ref, relation: 'depends-on' });
   return out;
 }
 

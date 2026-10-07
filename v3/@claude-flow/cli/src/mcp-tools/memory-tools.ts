@@ -10,7 +10,7 @@
  * @module v3/cli/mcp-tools/memory-tools
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { createHash } from 'crypto';
@@ -66,7 +66,16 @@ const MAX_QUERY_LENGTH = 4096;
 // validateMemoryInput. Imported by sanitizeMemoryKey so write-side sanitization
 // and read-side rejection can never drift apart (the symmetry bug behind #1884).
 const DANGEROUS_KEY_CHARS = /[;&|`$(){}[\]<>!#\\\0]|\.\.[/\\]/g;
-const DANGEROUS_KEY_PATTERN = /[;&|`$(){}[\]<>!#\\\0]|\.\.[/\\]/;
+export const DANGEROUS_KEY_PATTERN = /[;&|`$(){}[\]<>!#\\\0]|\.\.[/\\]/;
+
+/**
+ * #3570: the one key rule for every memory write path (MCP store, CLI store,
+ * import). Plain `/` stays legal (`probe/x`); traversal and shell metacharacters
+ * do not. Returns the error message, or null when the key is acceptable.
+ */
+export function memoryKeyError(key: string): string | null {
+  return DANGEROUS_KEY_PATTERN.test(key) ? 'Key contains disallowed characters' : null;
+}
 
 function validateMemoryInput(key?: string, value?: string, query?: string, namespace?: string): void {
   if (key && key.length > MAX_KEY_LENGTH) {
@@ -79,12 +88,36 @@ function validateMemoryInput(key?: string, value?: string, query?: string, names
     throw new Error(`Query exceeds maximum length of ${MAX_QUERY_LENGTH} characters`);
   }
   // Reject path traversal and shell metacharacters in keys/namespaces (#1425)
-  if (key && DANGEROUS_KEY_PATTERN.test(key)) {
-    throw new Error('Key contains disallowed characters');
-  }
+  const keyError = key ? memoryKeyError(key) : null;
+  if (keyError) throw new Error(keyError);
   if (namespace && DANGEROUS_KEY_PATTERN.test(namespace)) {
     throw new Error('Namespace contains disallowed characters');
   }
+}
+
+/**
+ * #3374 — presence check for a schema-`required` string parameter.
+ *
+ * `validateMemoryInput` above is a bounds-and-charset validator: every branch
+ * is truthiness-guarded, so an omitted parameter passes it silently. Nothing
+ * else enforces `inputSchema.required` for these tools, so without this an
+ * omitted `query` travelled down to `generateHashEmbedding`'s
+ * `text.toLowerCase()` and came back as an unrelated TypeError.
+ */
+const MISSING_REQUIRED_PARAM = 'MISSING_REQUIRED_PARAM' as const;
+
+function missingRequiredString(
+  input: Record<string, unknown>,
+  param: string,
+  tool: string,
+): { error: string; code: typeof MISSING_REQUIRED_PARAM } | null {
+  const v = input[param];
+  if (typeof v === 'string' && v.length > 0) return null;
+  const got = v === undefined ? 'it was omitted' : v === '' ? 'it was an empty string' : `got ${v === null ? 'null' : typeof v}`;
+  return {
+    error: `${tool}: required parameter "${param}" must be a non-empty string (${got})`,
+    code: MISSING_REQUIRED_PARAM,
+  };
 }
 
 // #1884 — sanitize a key produced from arbitrary input (markdown headings,
@@ -307,13 +340,14 @@ type ListPage<E> = {
  * that reported `success: false` was read as an empty one.
  */
 async function collectAllEntries<E>(
-  listEntries: (options: { limit?: number; offset?: number }) => Promise<ListPage<E>>,
+  listEntries: (options: { limit?: number; offset?: number; dbPath?: string }) => Promise<ListPage<E>>,
+  dbPath?: string,
 ): Promise<ListPage<E>> {
   const entries: E[] = [];
   let total = 0;
 
   for (let page = 0; page < MEMORY_STATS_MAX_PAGES; page++) {
-    const result = await listEntries({ limit: MEMORY_STATS_PAGE, offset: entries.length });
+    const result = await listEntries({ limit: MEMORY_STATS_PAGE, offset: entries.length, dbPath });
     if (!result.success) {
       return { success: false, entries, total: result.total ?? total, error: result.error };
     }
@@ -342,13 +376,13 @@ function memoryStatsUnavailable(error: string): {
  * WAL frames, so it is allowed to fail without that meaning the store is
  * missing — which is exactly the conflation #3311 reports.
  */
-async function readMemoryStatusLabels(): Promise<{
+async function readMemoryStatusLabels(dbPath?: string): Promise<{
   version?: string;
   features?: { vectorEmbeddings: boolean; patternLearning: boolean; temporalDecay: boolean };
 }> {
   try {
     const { checkMemoryInitialization } = await getMemoryFunctions();
-    const status = await checkMemoryInitialization();
+    const status = await checkMemoryInitialization(dbPath);
     return { version: status.version, features: status.features };
   } catch {
     return {};
@@ -360,40 +394,46 @@ async function readMemoryStatusLabels(): Promise<{
  * #1606: Wrapped in try/catch to prevent process-level crashes that kill
  * the stdio MCP transport on Windows/Codex.
  */
-async function ensureInitialized(): Promise<void> {
+async function ensureInitialized(dbPath?: string): Promise<void> {
   try {
     const { initializeMemoryDatabase, checkMemoryInitialization, storeEntry } = await getMemoryFunctions();
 
     // Check if already initialized
-    const status = await checkMemoryInitialization();
+    const status = await checkMemoryInitialization(dbPath);
     if (!status.initialized) {
-      await initializeMemoryDatabase({ force: false, verbose: false });
+      await initializeMemoryDatabase({ force: false, verbose: false, dbPath });
     }
 
     // Migrate legacy JSON data if exists (from old .claude-flow/memory/ location)
+    // A custom import target must not consume the one-time migration marker
+    // for the project's normal memory store.
     if (hasLegacyStore()) {
-      const legacyStore = loadLegacyStore();
-      if (legacyStore && Object.keys(legacyStore.entries).length > 0) {
-        console.error('[MCP Memory] Migrating legacy JSON store to sql.js...');
-        let migrated = 0;
+      const { resolveDbPath } = await import('../memory/memory-initializer.js');
+      if (!dbPath || dbPath === resolveDbPath()) {
+        const legacyStore = loadLegacyStore();
+        if (legacyStore && Object.keys(legacyStore.entries).length > 0) {
+          console.error('[MCP Memory] Migrating legacy JSON store to sql.js...');
+          let migrated = 0;
 
-        for (const [key, entry] of Object.entries(legacyStore.entries)) {
-          try {
-            const value = typeof entry.value === 'string' ? entry.value : JSON.stringify(entry.value);
-            await storeEntry({
-              key,
-              value,
-              namespace: 'default',
-              generateEmbeddingFlag: true,
-            });
-            migrated++;
-          } catch (e) {
-            console.error(`[MCP Memory] Failed to migrate key "${key}":`, e);
+          for (const [key, entry] of Object.entries(legacyStore.entries)) {
+            try {
+              const value = typeof entry.value === 'string' ? entry.value : JSON.stringify(entry.value);
+              await storeEntry({
+                key,
+                value,
+                namespace: 'default',
+                generateEmbeddingFlag: true,
+                dbPath,
+              });
+              migrated++;
+            } catch (e) {
+              console.error(`[MCP Memory] Failed to migrate key "${key}":`, e);
+            }
           }
-        }
 
-        console.error(`[MCP Memory] Migrated ${migrated}/${Object.keys(legacyStore.entries).length} entries`);
-        markMigrationComplete();
+          console.error(`[MCP Memory] Migrated ${migrated}/${Object.keys(legacyStore.entries).length} entries`);
+          markMigrationComplete();
+        }
       }
     }
   } catch (error) {
@@ -428,6 +468,11 @@ export const memoryTools: MCPTool[] = [
       required: ['key', 'value'],
     },
     handler: async (input) => {
+      const missingKey = missingRequiredString(input, 'key', 'memory_store');
+      if (missingKey) {
+        return { success: false, key: input.key, stored: false, hasEmbedding: false, ...missingKey };
+      }
+
       await ensureInitialized();
       const { storeEntry } = await getMemoryFunctions();
 
@@ -454,6 +499,10 @@ export const memoryTools: MCPTool[] = [
       }
 
       validateMemoryInput(key, value, undefined, namespace);
+      // #3570: a namespace written here must be exportable and purgeable, so it
+      // passes the same validator export and purge use.
+      const vNs = validateIdentifier(namespace, 'namespace');
+      if (!vNs.valid) throw new Error(vNs.error);
 
       const startTime = performance.now();
 
@@ -483,6 +532,8 @@ export const memoryTools: MCPTool[] = [
           backend: await describeBackend(),
           storeTime: `${duration.toFixed(2)}ms`,
           error: result.error,
+          // #3325: why hasEmbedding is false, when the bridge could not embed.
+          ...(result.embeddingError ? { embeddingError: result.embeddingError } : {}),
         };
       } catch (error) {
         return {
@@ -506,6 +557,11 @@ export const memoryTools: MCPTool[] = [
       required: ['key'],
     },
     handler: async (input) => {
+      const missingKey = missingRequiredString(input, 'key', 'memory_retrieve');
+      if (missingKey) {
+        return { key: input.key, namespace: input.namespace, value: null, found: false, ...missingKey };
+      }
+
       await ensureInitialized();
       const { getEntry } = await getMemoryFunctions();
 
@@ -559,7 +615,7 @@ export const memoryTools: MCPTool[] = [
   },
   {
     name: 'memory_search',
-    description: 'Find stored memories by meaning (vector similarity), not by literal text — finds "JWT auth pattern" when you query "token-based login flow". Use when native Grep is wrong because Grep matches characters and you need to find conceptually-related entries across past sessions. Backed by HNSW index over ONNX embeddings; returns top-k with similarity scores. Pair with smart=true for query expansion + MMR diversity.',
+    description: 'Find stored memories by meaning (vector similarity), not by literal text — finds "JWT auth pattern" when you query "token-based login flow". Use when native Grep is wrong because Grep matches characters and you need to find conceptually-related entries across past sessions. Returns top-k with similarity: raw retrieval relevance, which may include lexical scoring and is not guaranteed to be cosine similarity. With smart=true, similarity is the highest raw score across query variants; rankingScore is the composite relevance score used by the ranking pipeline, not cosine similarity, probability, or confidence. Diversity can change result order.',
     category: 'memory',
     inputSchema: {
       type: 'object',
@@ -567,8 +623,8 @@ export const memoryTools: MCPTool[] = [
         query: { type: 'string', description: 'Search query (semantic similarity)' },
         namespace: { type: 'string', description: 'Namespace to search (default: all namespaces — omit to search across every namespace)' },
         limit: { type: 'number', description: 'Maximum results (default: 10)' },
-        threshold: { type: 'number', description: 'Minimum similarity threshold 0-1 (default: 0.3)' },
-        smart: { type: 'boolean', description: 'Enable SmartRetrieval pipeline — query expansion, RRF fusion, recency boost, MMR diversity (default: false)' },
+        threshold: { type: 'number', description: 'Minimum raw retrieval relevance 0-1 for candidate admission, applied per query before SmartRetrieval ranking; not a floor on rankingScore (default: 0.3)' },
+        smart: { type: 'boolean', description: 'Enable SmartRetrieval — query expansion, RRF fusion, recency boost, MMR diversity; preserves raw similarity and adds rankingScore (default: false)' },
         provenance_filter: {
           type: 'array',
           items: { type: 'string', enum: ['user_claim', 'agent_output', 'system_observation', 'tool_result', 'unknown'] },
@@ -578,6 +634,11 @@ export const memoryTools: MCPTool[] = [
       required: ['query'],
     },
     handler: async (input) => {
+      const missingQuery = missingRequiredString(input, 'query', 'memory_search');
+      if (missingQuery) {
+        return { query: input.query, results: [], total: 0, ...missingQuery };
+      }
+
       await ensureInitialized();
       const { searchEntries } = await getMemoryFunctions();
 
@@ -635,6 +696,7 @@ export const memoryTools: MCPTool[] = [
                   key: e.key,
                   content: e.content,
                   score: e.score,
+                  rawScore: e.score,
                   namespace: e.namespace,
                   provenanceType: e.provenanceType,
                   // Dream Cycle 2026-09-03: thread the already-computed
@@ -654,14 +716,15 @@ export const memoryTools: MCPTool[] = [
 
             const duration = performance.now() - startTime;
 
-            const results = smartResult.results.map((r: { content: string; key: string; namespace: string; score: number; provenanceType?: string }) => {
+            const results = smartResult.results.map((r: { content: string; key: string; namespace: string; score: number; rawScore?: number; provenanceType?: string }) => {
               let value: unknown = r.content;
               try { value = JSON.parse(r.content); } catch { /* keep as string */ }
               return {
                 key: r.key,
                 namespace: r.namespace,
                 value,
-                similarity: r.score,
+                similarity: r.rawScore,
+                rankingScore: r.score,
                 provenanceType: r.provenanceType,
               };
             });
@@ -750,6 +813,11 @@ export const memoryTools: MCPTool[] = [
       required: ['key'],
     },
     handler: async (input) => {
+      const missingKey = missingRequiredString(input, 'key', 'memory_delete');
+      if (missingKey) {
+        return { success: false, key: input.key, namespace: input.namespace, deleted: false, ...missingKey };
+      }
+
       await ensureInitialized();
       const { deleteEntry } = await getMemoryFunctions();
 
@@ -843,10 +911,17 @@ export const memoryTools: MCPTool[] = [
     category: 'memory',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        dbPath: { type: 'string', description: 'Database file to inspect; omitted uses the MCP store default' },
+      },
     },
-    handler: async () => {
-      await ensureInitialized();
+    handler: async (input) => {
+      if (input.dbPath !== undefined && (typeof input.dbPath !== 'string' || !input.dbPath.trim())) {
+        return memoryStatsUnavailable('dbPath must be a non-empty string');
+      }
+      const dbPath = typeof input.dbPath === 'string' ? resolve(input.dbPath) : undefined;
+      // An explicit read must not initialize or migrate the unrelated default store.
+      if (!dbPath) await ensureInitialized();
       const { listEntries } = await getMemoryFunctions();
 
       // #3311: the store's own listing decides whether memory is there.
@@ -856,9 +931,9 @@ export const memoryTools: MCPTool[] = [
       // `initialized: false` from this tool alone. The probe is still read
       // below, for the version and feature labels it is the only source of,
       // but it no longer gets to overrule a working store.
-      let listing: ListPage<{ namespace: string; hasEmbedding: boolean }>;
+      let listing: ListPage<{ namespace: string; hasEmbedding: boolean; createdAt?: string | number }>;
       try {
-        listing = await collectAllEntries(listEntries);
+        listing = await collectAllEntries(listEntries, dbPath);
       } catch (error) {
         return memoryStatsUnavailable(error instanceof Error ? error.message : 'Unknown error');
       }
@@ -874,17 +949,45 @@ export const memoryTools: MCPTool[] = [
       // from the breakdown while still being counted in the total.
       const namespaces: Record<string, number> = Object.create(null) as Record<string, number>;
       let withEmbeddings = 0;
+      let oldest = Infinity;
+      let newest = -Infinity;
       for (const entry of listing.entries) {
         namespaces[entry.namespace] = (namespaces[entry.namespace] || 0) + 1;
         if (entry.hasEmbedding) withEmbeddings++;
+        // AgentDB returns INTEGER epoch milliseconds; legacy sql.js rows
+        // may expose ISO strings or numeric strings from SQLite TEXT affinity.
+        const rawCreated = entry.createdAt;
+        const millis = typeof rawCreated === 'number'
+          ? rawCreated
+          : typeof rawCreated === 'string' && /^-?\d+$/.test(rawCreated)
+            ? Number(rawCreated)
+            : Date.parse(rawCreated ?? '');
+        const created = new Date(millis).getTime();
+        if (Number.isFinite(created)) {
+          oldest = Math.min(oldest, created);
+          newest = Math.max(newest, created);
+        }
       }
 
       const counted = listing.entries.length;
-      const status = await readMemoryStatusLabels();
+      const status = await readMemoryStatusLabels(dbPath);
+      let totalSize: string | null = null;
+      if (dbPath) {
+        try {
+          let bytes = statSync(dbPath).size;
+          try { bytes += statSync(dbPath + '-wal').size; } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          }
+          totalSize = `${bytes} B`;
+        } catch { /* unavailable file metadata is unknown, not zero */ }
+      }
 
       return {
         initialized: true,
         totalEntries: listing.total,
+        ...(dbPath ? { location: dbPath, totalSize } : {}),
+        oldestEntry: counted >= listing.total && Number.isFinite(oldest) ? new Date(oldest).toISOString() : null,
+        newestEntry: counted >= listing.total && Number.isFinite(newest) ? new Date(newest).toISOString() : null,
         entriesCounted: counted,
         // The breakdown below covers `entriesCounted` rows, which is every
         // row unless the listing was truncated; say so rather than letting
@@ -1069,14 +1172,16 @@ export const memoryTools: MCPTool[] = [
             if (nameMatch) name = nameMatch[1].trim();
           }
 
-          // Split into sections for granular search
+          // Split into sections for granular search. Persist each full section:
+          // clipping at 4096 characters silently discarded its searchable tail (#3217).
           const sections = body.split(/^(?=## )/m).filter(s => s.trim().length > 20);
 
           if (sections.length === 0 && body.length > 10) {
             // #1884 — sanitize key so memory_delete can later remove it. Without
             // this, dangerous chars from frontmatter `name` strand the key.
             const key = sanitizeMemoryKey(`claude:${memFile.project}:${name}`);
-            await storeEntry({ key, value: body.slice(0, 4096), namespace: ns, generateEmbeddingFlag: true });
+            const stored = await storeEntry({ key, value: body, namespace: ns, generateEmbeddingFlag: true });
+            if (!stored.success) throw new Error(stored.error || `Failed to store ${key}`);
             imported++;
           } else {
             for (const section of sections) {
@@ -1087,7 +1192,8 @@ export const memoryTools: MCPTool[] = [
               // #1884 — sanitize so any dangerous chars in the heading don't
               // produce keys memory_delete will reject.
               const key = sanitizeMemoryKey(`claude:${memFile.project}:${name}:${sectionTitle.slice(0, 50)}`);
-              await storeEntry({ key, value: sectionBody.slice(0, 4096), namespace: ns, generateEmbeddingFlag: true });
+              const stored = await storeEntry({ key, value: sectionBody, namespace: ns, generateEmbeddingFlag: true });
+              if (!stored.success) throw new Error(stored.error || `Failed to store ${key}`);
               imported++;
             }
           }
@@ -1107,7 +1213,7 @@ export const memoryTools: MCPTool[] = [
       } catch { /* probe failed — leave 'unknown' */ }
 
       return {
-        success: true,
+        success: skipped === 0,
         imported,
         skipped,
         duplicatesSkipped,
@@ -1232,6 +1338,11 @@ export const memoryTools: MCPTool[] = [
       required: ['query'],
     },
     handler: async (input) => {
+      const missingQuery = missingRequiredString(input, 'query', 'memory_search_unified');
+      if (missingQuery) {
+        return { success: false, query: input.query, results: [], total: 0, ...missingQuery };
+      }
+
       await ensureInitialized();
       const { searchEntries, listEntries } = await getMemoryFunctions();
       validateMemoryInput(undefined, undefined, input.query as string);
@@ -1493,13 +1604,20 @@ export const memoryTools: MCPTool[] = [
         inputPath: { type: 'string', description: 'Path to the JSON export file' },
         merge: { type: 'boolean', description: 'Merge into existing entries (upsert) vs. fail on conflict (default true)' },
         namespace: { type: 'string', description: 'Override the namespace for all imported entries' },
+        dbPath: { type: 'string', description: 'Database file to import into (defaults to the MCP memory store)' },
       },
       required: ['inputPath'],
     },
     handler: async (input) => {
-      await ensureInitialized();
+      const dbPath = typeof input.dbPath === 'string' && input.dbPath.trim()
+        ? resolve(input.dbPath)
+        : undefined;
+      await ensureInitialized(dbPath);
       const { storeEntry } = await getMemoryFunctions();
       const t0 = Date.now();
+      // Values are re-embedded on import; count the vectors actually written
+      // rather than reporting a constant 0 next to entries that show a vector.
+      let vectors = 0;
       const inputPath = String(input.inputPath ?? '');
       if (!inputPath || !existsSync(inputPath)) return { error: `File not found: ${inputPath || '(empty)'}` };
       let doc: { entries?: Array<{ key: string; namespace?: string; value?: unknown }> };
@@ -1508,18 +1626,35 @@ export const memoryTools: MCPTool[] = [
       const entries = Array.isArray(doc.entries) ? doc.entries : [];
       const nsOverride = input.namespace ? String(input.namespace) : undefined;
       if (nsOverride) { const v = validateIdentifier(nsOverride, 'namespace'); if (!v.valid) throw new Error(v.error); }
+      // #3570: validate every entry's namespace up front so a bad file writes nothing.
+      if (!nsOverride) {
+        for (const e of entries) {
+          if (e && typeof e.key === 'string' && e.namespace !== undefined) {
+            const v = validateIdentifier(String(e.namespace), 'namespace');
+            if (!v.valid) throw new Error(v.error);
+          }
+        }
+      }
+      // #3570 follow-up: keys get the same up-front, all-or-nothing check.
+      for (const e of entries) {
+        if (e && typeof e.key === 'string') {
+          const keyError = memoryKeyError(e.key);
+          if (keyError) throw new Error(`${keyError}: ${JSON.stringify(e.key)}`);
+        }
+      }
       let imported = 0; let skipped = 0;
       for (const e of entries) {
         if (!e || typeof e.key !== 'string') { skipped++; continue; }
         const value = typeof e.value === 'string' ? e.value : JSON.stringify(e.value ?? null);
         try {
-          await storeEntry({ key: e.key, value, namespace: nsOverride ?? e.namespace ?? 'default', upsert: input.merge !== false });
-          imported++;
+          const result = await storeEntry({ key: e.key, value, namespace: nsOverride ?? e.namespace ?? 'default', upsert: input.merge !== false, dbPath });
+          if (result.success) { imported++; if (result.embedding) vectors++; }
+          else skipped++;
         } catch { skipped++; }
       }
       return {
         inputPath,
-        imported: { entries: imported, vectors: 0, patterns: 0 },
+        imported: { entries: imported, vectors, patterns: 0 },
         skipped,
         duration: Date.now() - t0,
       };

@@ -1,3 +1,4 @@
+import { validateFeedbackPatterns } from '../memory/feedback-patterns.js';
 /**
  * V3 CLI Hooks Command
  * Self-learning hooks system for intelligent workflow automation
@@ -667,6 +668,11 @@ const postCommandCommand: Command = {
       short: 'd',
       description: 'Execution duration in milliseconds',
       type: 'number'
+    },
+    {
+      name: 'ttl',
+      description: 'Command history lifetime in seconds (default: 30 days)',
+      type: 'number'
     }
   ],
   examples: [
@@ -700,14 +706,19 @@ const postCommandCommand: Command = {
         success,
         exitCode: ctx.flags.exitCode || 0,
         duration: ctx.flags.duration,
+        ttl: ctx.flags.ttl,
         timestamp: Date.now(),
       });
 
       if (ctx.flags.format === 'json') {
         output.printJson(result);
-        return { success: true, data: result };
+        return { success: result.recorded, exitCode: result.recorded ? 0 : 1, data: result };
       }
 
+      if (!result.recorded) {
+        output.printError('Command outcome could not be recorded');
+        return { success: false, exitCode: 1, data: result };
+      }
       output.writeln();
       output.printSuccess('Command outcome recorded');
 
@@ -816,7 +827,7 @@ const routeCommand: Command = {
     const parallel = Math.max(2, parallelRaw);
     const consensus = (ctx.flags.consensus as string) || 'majority-vote';
 
-    if (!task) {
+    if (!task || !task.trim()) {
       output.printError('Task description is required. Use --task or -t flag.');
       return { success: false, exitCode: 1 };
     }
@@ -834,6 +845,9 @@ const routeCommand: Command = {
           throughput: string;
         };
         matchedPattern?: string;
+        /** #3567: false when nothing matched; the agent shown is only a default. */
+        matched?: boolean;
+        note?: string;
         semanticMatches?: Array<{
           pattern: string;
           score: number;
@@ -849,7 +863,7 @@ const routeCommand: Command = {
           reason: string;
         }>;
         estimatedMetrics: {
-          successProbability: number;
+          successProbability: number | null;
           estimatedDuration: string;
           complexity: 'low' | 'medium' | 'high';
         };
@@ -928,13 +942,14 @@ const routeCommand: Command = {
       }
 
       output.writeln();
+      const noMatch = result.matched === false;
       output.printBox(
         [
           `Agent: ${output.highlight(result.primaryAgent.type)}`,
-          `Confidence: ${(result.primaryAgent.confidence * 100).toFixed(1)}%`,
+          `Confidence: ${(result.primaryAgent.confidence * 100).toFixed(1)}%${noMatch ? ' (no match: default only)' : ''}`,
           `Reason: ${result.primaryAgent.reason}`
         ].join('\n'),
-        'Primary Recommendation'
+        noMatch ? 'Default Suggestion (nothing matched)' : 'Primary Recommendation'
       );
 
       if (result.alternativeAgents.length > 0) {
@@ -954,7 +969,9 @@ const routeCommand: Command = {
         output.writeln();
         output.writeln(output.bold('Estimated Metrics'));
         output.printList([
-          `Success Probability: ${(result.estimatedMetrics.successProbability * 100).toFixed(1)}%`,
+          `Success Probability: ${result.estimatedMetrics.successProbability === null
+            ? 'unknown (nothing matched)'
+            : `${(result.estimatedMetrics.successProbability * 100).toFixed(1)}%`}`,
           `Estimated Duration: ${result.estimatedMetrics.estimatedDuration}`,
           `Complexity: ${result.estimatedMetrics.complexity.toUpperCase()}`
         ]);
@@ -2095,6 +2112,7 @@ const postTaskCommand: Command = {
   name: 'post-task',
   description: 'Record task completion for learning',
   options: [
+    { name: 'patterns', description: 'JSON array of learned pattern strings for feedback and skill creation', type: 'string' },
     {
       name: 'task-id',
       short: 'i',
@@ -2182,17 +2200,22 @@ const postTaskCommand: Command = {
     output.printInfo(`Recording outcome for task: ${output.highlight(taskId)}`);
 
     try {
+      const patterns = validateFeedbackPatterns(ctx.flags.patterns === undefined ? undefined : JSON.parse(ctx.flags.patterns as string));
       const result = await callMCPTool<{
         taskId: string;
         success: boolean;
         duration: number;
         learningUpdates: {
           patternsUpdated: number;
-          newPatterns: number;
-          trajectoryId: string;
+          newPatterns: number | null;
+          trajectoryId: string | null;
+          available?: boolean;
+          reason?: string;
         };
+        trajectory?: { recorded: boolean };
       }>('hooks_post-task', {
         taskId,
+        patterns,
         success,
         quality: ctx.flags.quality,
         agent: ctx.flags.agent,
@@ -2221,6 +2244,13 @@ const postTaskCommand: Command = {
       output.writeln();
       output.printSuccess(`Task outcome recorded: ${success ? 'SUCCESS' : 'FAILED'}`);
 
+      // #3353: only show observed learning results; say so when degraded.
+      const lu = result.learningUpdates;
+      if (lu.available === false) {
+        output.writeln();
+        output.printWarning(`Learning degraded: ${lu.reason ?? 'feedback not recorded'} — no pattern updates were observed`);
+      }
+
       output.writeln();
       output.writeln(output.bold('Learning Updates'));
       output.printTable({
@@ -2229,10 +2259,10 @@ const postTaskCommand: Command = {
           { key: 'value', header: 'Value', width: 20, align: 'right' }
         ],
         data: [
-          { metric: 'Patterns Updated', value: result.learningUpdates.patternsUpdated },
-          { metric: 'New Patterns', value: result.learningUpdates.newPatterns },
+          { metric: 'Patterns Updated', value: lu.patternsUpdated },
+          { metric: 'New Patterns', value: lu.newPatterns ?? 'unknown' },
+          { metric: 'Trajectory Recorded', value: result.trajectory ? (result.trajectory.recorded ? 'yes' : 'no') : 'unknown' },
           { metric: 'Duration', value: `${(result.duration / 1000).toFixed(1)}s` },
-          { metric: 'Trajectory ID', value: result.learningUpdates.trajectoryId }
         ]
       });
 

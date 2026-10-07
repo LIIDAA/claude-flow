@@ -1702,7 +1702,7 @@ const boundariesCommand: Command = {
 
         for (const cycle of result.circularDependencies.slice(0, 5)) {
           const severityColor = cycle.severity === 'high' ? output.error : cycle.severity === 'medium' ? output.warning : output.dim;
-          output.writeln(`${severityColor(`[${cycle.severity.toUpperCase()}]`)} ${cycle.cycle.join(' -> ')}`);
+          output.writeln(`${severityColor.call(output, `[${cycle.severity.toUpperCase()}]`)} ${cycle.cycle.join(' -> ')}`);
           output.writeln(output.dim(`  ${cycle.suggestion}`));
           output.writeln();
         }
@@ -2189,7 +2189,7 @@ const circularCommand: Command = {
         if (items.length === 0) continue;
 
         const color = severity === 'high' ? output.error : severity === 'medium' ? output.warning : output.dim;
-        output.writeln(color(output.bold(`${severity.toUpperCase()} SEVERITY (${items.length})`)));
+        output.writeln(color.call(output, output.bold(`${severity.toUpperCase()} SEVERITY (${items.length})`)));
         output.writeln();
 
         for (const cycle of items.slice(0, 5)) {

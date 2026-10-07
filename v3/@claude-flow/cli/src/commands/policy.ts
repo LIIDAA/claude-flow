@@ -100,7 +100,11 @@ export const policyCommand: Command = {
         const state = loadPolicyState(root);
         return print({ receipts: state.receipts });
       }
-      if (operation === 'verify') return print(await verifyPolicyLedger(root));
+      if (operation === 'verify') {
+        const ledger = await verifyPolicyLedger(root);
+        const result = print(ledger);
+        return ledger.valid ? result : { ...result, success: false, exitCode: 1 };
+      }
       throw new Error(`unknown policy operation: ${operation}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
