@@ -195,3 +195,22 @@ export function chunksOf(text: string, size: number, overlap = 0): string[] {
 
   return out
 }
+
+/** The typed two-character sequence `\n` is a line break (the host's field is one line and has no key for a new line); real line breaks are kept as they are. */
+export const withBreaks = (text: string): string => text.replace(/\\n/g, '\n')
+
+/**
+ * A draft as it is typed: wrapped to `width`, and when it is taller than `maxLines` the LAST lines (where the cursor is), led by an explicit marker
+ * with the number of earlier lines. `total` is the line count for a "N lines" indicator.
+ */
+export function showTail(text: string, width: number, maxLines = 12): Shown {
+  const all = wrapFull(withBreaks(text), width)
+
+  if (all.length <= maxLines) return { lines: all, total: all.length, hidden: 0, marker: null }
+
+  const kept = all.slice(all.length - (maxLines - 1))
+  const hidden = all.length - kept.length
+  const marker = `… (${grouped(hidden)} earlier line${hidden === 1 ? '' : 's'} above; all of it is kept and sent)`
+
+  return { lines: [marker, ...kept], total: all.length, hidden, marker }
+}

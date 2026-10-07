@@ -3,6 +3,8 @@
  * `/ruflo yes`) and then runs one fixed argv through the ruflo CLI, after which the disk is re-read to say whether it
  * took; a read runs at once and shows what it printed. Nothing reaches `$` but through the Host.
  */
+import { LONG_TEXT_MAX } from './full-text'
+import { textRefusal } from './ops'
 import type { ActionSpec } from './actions'
 import { rememberKey } from './remember'
 import { record } from './data/events'
@@ -197,9 +199,23 @@ export function createRunner(state: State, host: Host, deps: RunnerDeps): Runner
       case 'spec':
         ask(entry.run.spec, entry.run.why)
         break
-      case 'text':
-        ask(entry.run.make(text), entry.run.why?.(text) ?? `type "${entry.run.keyword} <text>"; text may not start with -`)
+      case 'text': {
+        // Over every limit: refused with the exact count, before anything runs; the palette keeps the text (ADR-481).
+        const tooLong = textRefusal(text, 'the text', LONG_TEXT_MAX)
+
+        if (tooLong !== null) {
+          state.palette.isOpen = true
+          say('text too long', false, tooLong)
+          break
+        }
+
+        const spec = entry.run.make(text)
+        // A command argument carries less than a prompt: when the entry refused only for that, say by how much.
+        const argvWhy = spec === null ? textRefusal(text) : null
+
+        ask(spec, argvWhy ?? entry.run.why?.(text) ?? `type "${entry.run.keyword} <text>"; text may not start with -`)
         break
+      }
       case 'view':
         deps.setView(entry.run.view)
         break

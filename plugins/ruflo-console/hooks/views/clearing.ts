@@ -1,5 +1,8 @@
 import { takeKept } from '../field-keep'
-import { countOf, showFull, SHOW_LINES } from '../full-text'
+import { countOf, grouped, showTail } from '../full-text'
+
+/** Lines the typing mirror grows to before it shows the last lines with a marker. */
+export const ECHO_LINES = 12
 import type { State } from '../state'
 import type { Kit } from './common'
 
@@ -26,17 +29,29 @@ export type Echo = { columns: number; repaint: () => void }
  * the Input is returned as it was.
  */
 function withEcho(kit: Kit, input: ReturnType<NonNullable<Kit['Input']>>, key: string, label: string | undefined, text: string, columns: number): ReturnType<NonNullable<Kit['Input']>> {
-  const lineWidth = Math.max(12, columns - 6)
+  const lineWidth = Math.max(12, columns - 8)
+  const fieldWidth = Math.max(10, lineWidth - 8 - (label?.length ?? 0))
 
-  if (countOf(text) <= Math.max(10, lineWidth - 8 - (label?.length ?? 0))) return input
+  if (countOf(text) <= fieldWidth && !/[\r\n]|\\n/.test(text)) return input
 
-  const shown = showFull(text, lineWidth, { maxLines: SHOW_LINES, hint: 'all of it is still in the field above and is sent whole' })
+  // The host field is one line: a bordered live mirror under it holds every line typed, growing with the text (up to ECHO_LINES, then the last lines
+  // and a marker), with a line count.
+  const shown = showTail(text, lineWidth - 2, ECHO_LINES)
 
   return kit.Box({
     key: `${key}-full`,
     flexDirection: 'column',
     flexGrow: 1,
-    children: [input, ...shown.lines.map(line => kit.Text({ dimColor: true, children: ` ${line}` }))],
+    children: [
+      input,
+      kit.Box({
+        key: `${key}-mirror`,
+        flexDirection: 'column',
+        borderStyle: 'round',
+        paddingX: 1,
+        children: [...shown.lines.map(line => kit.Text({ dimColor: false, children: line === '' ? ' ' : line })), kit.Text({ dimColor: true, children: `${shown.total} line${shown.total === 1 ? '' : 's'} · ${grouped(countOf(text))} characters · Enter sends all of it · type \\n for a new line` })],
+      }),
+    ],
   })
 }
 
@@ -66,7 +81,7 @@ export function withClearing(kit: Kit, state: State, clear: (key: string) => voi
         value: current,
         onInput: (value, e) => {
           const wasLong = longOf(state).has(props.key)
-          const isLong = echo !== undefined && countOf(value) > Math.max(10, Math.max(12, echo.columns - 6) - 8 - (props.label?.length ?? 0))
+          const isLong = echo !== undefined && countOf(value) > Math.max(10, Math.max(12, echo.columns - 8) - 8 - (props.label?.length ?? 0)) || /[\r\n]|\\n/.test(value)
 
           state.fieldText.set(props.key, value)
           if (isLong) longOf(state).add(props.key)

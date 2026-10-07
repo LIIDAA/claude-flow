@@ -6,6 +6,7 @@
  * share nothing (a conversation, setting values). A view may also offer the slash command of a ruflo plugin that fits it, when the
  * session lists that command.
  */
+import { checkLimit, LONG_TEXT_MAX } from './full-text'
 import { plain } from './data/parse'
 import type { Host } from './host'
 import { mcOf } from './mission-control'
@@ -57,7 +58,7 @@ export const VIEW_ASK: Record<ViewId, ViewAsk> = {
 /** Views that share no screen text: a conversation, or setting values. */
 const NOT_SHARED: ReadonlySet<ViewId> = new Set(['terminal', 'settings'])
 const MAX_DUMP = 4_000
-const MAX_QUESTION = 300
+const MAX_QUESTION = Number.MAX_SAFE_INTEGER
 
 const SECRETS: readonly RegExp[] = [
   /-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g,
@@ -142,6 +143,10 @@ export function askActions(state: State, host: Host, runner: Runner, act: () => 
   const deliver = (mode: 'visible' | 'aside', question: string | undefined, view: ViewId): void | Promise<void> => {
     const byModel = state.control.viaModel
     const typed = plain(question ?? '', MAX_QUESTION).trim()
+    const fit = checkLimit(typed, LONG_TEXT_MAX, 'the question', 'sent to Claude as one prompt')
+
+    if (!fit.ok) return say('question not sent', false, fit.message)
+
     const prompt = askPrompt(state, act(), view, typed)
     const ask = () =>
       runner.ask(

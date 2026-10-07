@@ -8,6 +8,7 @@
  * ▸ ask claude / ▸ ask codex send an explaining prompt about a setting to the AI terminal at once (claude -p in plan mode, codex
  * exec read-only, the saved per-turn budget) and the reply streams in; nothing is changed by it.
  */
+import { checkLimit, countOf } from './full-text'
 import type { ActionSpec } from './actions'
 import { budgetAmount } from './cost'
 import { plain } from './data/parse'
@@ -237,7 +238,7 @@ export function valueOf(config: PluginConfig, key: string, raw: string): string 
   const entry = config.schema[key]
   const value = raw.trim()
 
-  if (entry === undefined || entry.isSecret || value.includes('\n') || value.length > 200) return null
+  if (entry === undefined || entry.isSecret || value.includes('\n') || countOf(value) > OPTION_MAX) return null
   if (entry.type === 'number') return /^-?\d+(\.\d+)?$/.test(value) ? value : null
 
   const choices = config.choices[key]
@@ -269,6 +270,9 @@ export function setOption(state: State, name: string, key: string, raw: string, 
     onOutput: reload,
   }
 }
+
+/** The longest plugin option value the console writes (it travels as JSON on stdin; a real option is a path, a name or a short list). Over it: refused with the count. */
+export const OPTION_MAX = 4_000
 
 const CORE_VALUE = /^[A-Za-z0-9._:/-]{1,60}$/
 
@@ -334,7 +338,7 @@ export async function loadAiPrefs(state: State, host: Host): Promise<void> {
     modelControl: stored?.modelControl === 'off' ? 'off' : ((['read', 'write', 'manage', 'full'] as const).find(item => item === stored?.modelControl) ?? DEFAULT_AI.modelControl),
     modelConfirm: stored?.modelConfirm === 'auto' ? 'auto' : 'ask',
     missionContext: stored?.missionContext !== false,
-    loopGates: typeof stored?.loopGates === 'string' ? stored.loopGates.slice(0, 800) : '',
+    loopGates: typeof stored?.loopGates === 'string' ? stored.loopGates : '',
     missionCapUsd: typeof stored?.missionCapUsd === 'string' ? (capText(stored.missionCapUsd) ?? '') : '',
     loopInterval: LOOP_INTERVALS.find(item => item === stored?.loopInterval) ?? DEFAULT_LOOP.loopInterval,
     loopWorktrees: flag('loopWorktrees', DEFAULT_LOOP.loopWorktrees),
@@ -410,7 +414,7 @@ export function settingsActions(state: State, host: Host, runner: Runner, load: 
 
   return {
     search: query => {
-      settings.query = plain(query, 80).trim()
+      settings.query = plain(query, Number.MAX_SAFE_INTEGER).trim()
       host.invalidate()
       if (settings.query !== '') void loadAll(state, host, names())
     },
@@ -432,7 +436,7 @@ export function settingsActions(state: State, host: Host, runner: Runner, load: 
       reloadPlugin()
       reloadCore()
     },
-    option: (name, key, value) => runner.ask(setOption(state, name, key, value, reloadPlugin), `“${plain(value, 40)}” is not a value ${key} accepts`),
+    option: (name, key, value) => runner.ask(setOption(state, name, key, value, reloadPlugin), checkLimit(value.trim(), OPTION_MAX, `the ${key} value`).ok ? `“${plain(value, 40)}” is not a value ${key} accepts` : (checkLimit(value.trim(), OPTION_MAX, `the ${key} value`) as { message: string }).message),
     core: (key, value) => runner.ask(setCore(state, key, value, reloadCore), `“${plain(value, 40)}” is not a value ${key} accepts`),
     ai: patch => saveAiPrefs(state, host, patch),
     alwaysAccept: () => {
