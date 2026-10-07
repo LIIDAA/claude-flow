@@ -119,17 +119,33 @@ describe('hive-mind gate end to end (ADR-476)', () => {
   }, 60_000);
 
   it('the HTTP server refuses every gated call without the operator secret, then accepts it', async () => {
-    const port = 34000 + Math.floor(Math.random() * 4000);
-    const e = env({ RUFLO_HIVE_BOOTSTRAP_SECRET: SECRET });
-    child = spawn('node', [path.join(BIN, 'cli.js'), 'mcp', 'start', '-t', 'http', '--port', String(port)], {
-      cwd: dir, env: e, stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    await new Promise<void>((resolve, reject) => {
-      let out = '';
-      const t = setTimeout(() => reject(new Error(`http start timeout\n${out}`)), 20_000);
-      child!.stdout.on('data', (c: Buffer) => { out += c.toString(); if (out.includes('MCP Server started')) { clearTimeout(t); resolve(); } });
-      child!.once('exit', (code) => { clearTimeout(t); reject(new Error(`exited ${code}\n${out}`)); });
-    });
+    // CI builds dist/ concurrently with other test files (integration-docker runs
+    // `npm run build`), so a cold server start can hit a half-written dist and
+    // exit before binding. Retry a few times on an early exit; a real failure
+    // (the assertions below) is never retried.
+    let port = 0;
+    let lastFailure = '';
+    for (let attempt = 1; attempt <= 4 && !port; attempt++) {
+      const candidate = 34000 + Math.floor(Math.random() * 4000);
+      const e = env({ RUFLO_HIVE_BOOTSTRAP_SECRET: SECRET });
+      child = spawn('node', [path.join(BIN, 'cli.js'), 'mcp', 'start', '-t', 'http', '--port', String(candidate)], {
+        cwd: dir, env: e, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const started = await new Promise<string | null>((resolve) => {
+        let out = '';
+        let err = '';
+        const t = setTimeout(() => resolve(`start timeout\nstdout: ${out}\nstderr: ${err}`), 20_000);
+        child!.stdout.on('data', (c: Buffer) => { out += c.toString(); if (out.includes('MCP Server started')) { clearTimeout(t); resolve(null); } });
+        child!.stderr.on('data', (c: Buffer) => { err += c.toString(); });
+        child!.once('exit', (code) => { clearTimeout(t); resolve(`exited ${code}\nstdout: ${out}\nstderr: ${err}`); });
+      });
+      if (started === null) { port = candidate; break; }
+      lastFailure = started;
+      if (child.exitCode === null) child.kill('SIGKILL');
+      fs.rmSync(dir, { recursive: true, force: true });
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    if (!port) throw new Error(`HTTP server never started after 4 attempts. Last failure: ${lastFailure}`);
     let id = 0;
     const post = async (body: unknown) => (await fetch(`http://127.0.0.1:${port}/mcp`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
@@ -158,5 +174,5 @@ describe('hive-mind gate end to end (ADR-476)', () => {
 
     expect((await call('hive-mind_spawn', { count: 1, bootstrapSecret: SECRET })).success).toBe(true);
     expect((await call('hive-mind_shutdown', { force: true, bootstrapSecret: SECRET })).success).toBe(true);
-  }, 90_000);
+  }, 150_000);
 });
