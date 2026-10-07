@@ -17,6 +17,7 @@ import { buildOf, isOurCheckout, setBuild } from './build'
 import { runUpdateCheck } from './update-flow'
 import { announceModelTools, parseControlEnv, serveModelTools } from './model-tools'
 import { loadAiPrefs, setControlCap } from './settings'
+import { hydrateWhatsNew } from './whatsnew'
 import { prefsFromStore, recordToast, saveToastPrefs, TOASTS_KEY } from './toasts'
 import { contextSection, onPromptSubmit, onTurnComplete } from './mission-claude'
 import { parseMode, RECHECK_EVERY_MS, UPDATES_KEY } from './updates'
@@ -202,7 +203,11 @@ export const register: Register = (on, raw: PluginOptions) => {
       () => undefined,
     )
 
+    // What's new (ADR-478): the record of what was looked at, read once; the controller's first disk read then takes the baseline.
+    const looked = hydrateWhatsNew(state, here).catch(() => undefined)
+
     void toasted
+    void looked
     void Promise.all([built, moded]).then(() => {
       if (!state.isInteractive) return
 

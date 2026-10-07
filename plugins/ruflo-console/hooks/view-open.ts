@@ -9,10 +9,15 @@ import { loadCatalog } from './plugin-catalog'
 import { probeTmux } from './sandbox'
 import { loadAiPrefs, loadCore, loadPlugin, settingsOf } from './settings'
 import { CLI_PREFIXES, type State } from './state'
+import { closeWhatsNew, openWhatsNew } from './whatsnew'
 
 import { loadCommandNames } from './mission-skills'
 
 export function openLoaders(state: State, host: Host, view: State['view']): void {
+  // What's new reads each plugin's bundled CHANGELOG.md (local files, no network) when it opens, and forgets the divider when it is left.
+  if (view === 'whatsnew') void openWhatsNew(state, host)
+  else closeWhatsNew(state)
+
   // Mission Control asks the session which slash commands it offers (the ruflo-goals skills among them).
   // Every section can offer the slash command of the plugin that fits it, so the session's commands are read once.
   if (view === 'missions' || state.commandNames.length === 0) void loadCommandNames(state, host)

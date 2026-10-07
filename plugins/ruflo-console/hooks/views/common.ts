@@ -8,6 +8,7 @@ import type { OptimizerActions } from '../optimizer'
 import { askedBy } from '../data/room'
 import type { RoomActions } from '../room'
 import type { WatchActions } from '../watch'
+import type { WhatsNewActions } from '../whatsnew'
 import type { EventsActions } from '../events-ui'
 import type { TimelineActions } from '../timeline-ui'
 import type { Attention } from './attention'
@@ -128,6 +129,8 @@ export type Actions = {
   checkUpdates: () => void
   /** The Toasts setting (ADR-477): which levels draw (all, important, off), and muting or unmuting one source's toasts (saved; every toast is still recorded). */
   toasts: { mode: (mode: ToastMode) => void; mute: (source: string) => void }
+  /** What's new (ADR-478): dismiss a pinned breaking change (or all of them), toggle the toast for a new version. */
+  whatsnew: WhatsNewActions
   /** Opens or closes a collapsible section (`<view>/<id>`). */
   toggle: (key: string) => void
   /** The Workflows page: cursor keys, the inspector's tab, the confirm-gated ruflo agent verbs, and naming a transcript's path. */

@@ -26,6 +26,7 @@ import { costView } from './cost'
 import { evolveResult, evolveView } from './evolve'
 import { catalogView } from './plugin-catalog'
 import { settingsView } from './settings'
+import { whatsnewView } from './whatsnew'
 import { devtoolsResult, devtoolsView } from './devtools'
 import { sandboxView } from './sandbox'
 import { federationView } from './federation'
@@ -96,6 +97,7 @@ const BODIES: Record<ViewId, (ctx: Ctx) => RenderElement> = {
   sandbox: sandboxView,
   market: catalogView,
   settings: settingsView,
+  whatsnew: whatsnewView,
   agent: agentView,
 }
 
