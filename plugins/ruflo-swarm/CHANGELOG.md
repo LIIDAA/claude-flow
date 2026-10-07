@@ -2,6 +2,9 @@
 
 Newest first. One `## <version> — <date>` heading per version, then `feat:`, `fix:`, `breaking:` and `chore:` bullets (ADR-478). Built from git history; this is the whole history.
 
+## 0.3.5 — 2026-10-07
+- feat: a spawned subagent is given the accepted ADRs attached to the active ruflo-console mission (masked, capped, as data), and its member row names them; option injectAdrs, on by default, nothing added without an attached ADR (ADR-480)
+
 ## 0.3.4 — 2026-10-07
 - feat: shared toast system with levels, dedupe, persistence and Settings (ADR-477)
 - feat: shared toast policy and its call sites (ADR-477), work in progress

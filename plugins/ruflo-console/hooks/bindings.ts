@@ -42,6 +42,7 @@ import { claudeActions } from './mission-claude'
 import { UPDATES_KEY } from './updates'
 import { setToastMode, toggleToastMute } from './toasts'
 import { whatsnewActions } from './whatsnew'
+import { adrActions } from './adr-actions'
 import { vectorActions } from './vector'
 import type { Actions } from './views/common'
 import { openTasks, selection } from './views/select'
@@ -123,6 +124,7 @@ export function actionsOf(state: State, host: Host, runner: Runner, steps: Steps
       mute: source => toggleToastMute(state, host, source),
     },
     whatsnew: whatsnewActions(state, host),
+    adrs: adrActions(state, host, runner),
     checkUpdates: () => {
       state.updateNote = 'checking…'
       host.invalidate()
