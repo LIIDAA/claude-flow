@@ -92,7 +92,7 @@ commands, skills and agents above behave as they always have.
   `/ruflo-swarm-consensus` stay registered as aliases (ADR-406: no command is removed or renamed). `/ruflo-swarm:watch` also opens the pane.
 - **Options** (`/config`): `panel` (command, the default since ruflo-console's cockpit is the pane that opens by
   itself | auto | off: `/ruflo swarm pane` refuses and `/ruflo-swarm:watch` does not open it), `cli` (`npx-offline`, the default, never touches the
-  network), `routeThreshold`, `injectSpawnContext` (off by default: appends a one-line swarm note to spawned subagents'
+  network), `routeThreshold`, `injectAdrs` (on by default: with ADRs attached to the active ruflo-console mission, appends their accepted decisions, masked and capped, to spawned subagents' prompts and names them on the member row; nothing is added without an attached ADR), `injectSpawnContext` (off by default: appends a one-line swarm note to spawned subagents'
   prompts) and `audit` (off by default: event names, tool names and agent ids into ruflo memory, never content).
 - The mod does not register `prompt.submit` or `tool.check` hooks, and its `tool.call` hook only observes.
 - **With the ruflo-mods trust gate:** if you set `modTrust: refuse-risky`, the gate refuses this mod. The mod hooks

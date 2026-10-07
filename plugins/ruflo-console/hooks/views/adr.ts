@@ -7,7 +7,8 @@
  */
 import type { RenderElement } from 'claude-code'
 
-import { adrOf, attachedOf, docOf, suggestFor, transitionsOf } from '../adr'
+import { adrOf, docOf, transitionsOf } from '../adr'
+import { attachedOf, suggestFor } from '../adr-mission'
 import { countsOf, filterDocs, graphOf, STATUSES, type AdrDoc, type AdrStatus } from '../data/adr'
 import { activeMission, mcOf } from '../mission-control'
 import { button, col, kv, row, rule, section, text, THEME, type Ctx } from './common'

@@ -70,7 +70,7 @@ export function adrOf(state: State): AdrState {
   return found
 }
 
-const root = (state: State): string => state.cwd.replace(/\/+$/, '')
+export const root = (state: State): string => state.cwd.replace(/\/+$/, '')
 const isDir = (kind: string | undefined): boolean => kind === 'dir' || kind === 'directory'
 
 /** The folder the project keeps its ADRs in: the setting if there is one, else the first usual place that exists. A link is refused. */
@@ -168,20 +168,20 @@ export async function loadAdrs(state: State, host: Pick<Host, 'fs' | 'invalidate
 export const docOf = (state: State, file: string): AdrDoc | undefined => adrOf(state).registry.docs.find(doc => doc.file === file)
 export const docByNumber = (state: State, number: number): AdrDoc | undefined => adrOf(state).registry.byNumber.get(number)?.[0]
 
-const say = (state: State, host: Pick<Host, 'invalidate'>, label: string, ok: boolean, lines: string[]): void => {
+export const say = (state: State, host: Pick<Host, 'invalidate'>, label: string, ok: boolean, lines: string[]): void => {
   adrOf(state).last = { label, ok, lines: lines.slice(0, MAX_RESULT_LINES).map(line => plain(line, 200)) }
   host.invalidate()
 }
 
 /** One event on the Events page and one toast (source console, level info): the ADR said what happened, once. */
-function announce(state: State, host: Pick<Host, 'toast'>, text: string): void {
+export function announce(state: State, host: Pick<Host, 'toast'>, text: string): void {
   const line = plain(text, 118)
 
   recordEvents(state.events, [{ atMs: Date.now(), kind: 'notices', text: `adr: ${line}` }])
   if (state.isInteractive) host.toast(line, 6000, 'info')
 }
 
-const abs = (state: State, dir: string, name: string): string => `${root(state)}/${dir}/${name}`
+export const abs = (state: State, dir: string, name: string): string => `${root(state)}/${dir}/${name}`
 
 async function writeNew(state: State, host: Pick<Host, 'fs' | 'run'>, dir: string, name: string, text: string): Promise<string | null> {
   const path = abs(state, dir, name)
@@ -352,169 +352,4 @@ export async function statusSpec(state: State, host: Pick<Host, 'fs' | 'run' | '
       announce(state, host, `ADR ${doc.number ?? doc.file} ${to === 'superseded' && by !== null ? `superseded by ADR ${by.number}` : to}`)
     },
   }
-}
-
-// ---------------------------------------------------------------------------------------------------------------- missions
-
-export const MAX_ATTACH = 8
-const FILE_SAFE = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,119}\.md$/
-
-/** The file names a mission has attached, validated (a saved ledger is not trusted). */
-export const attachedOf = (mission: MissionRecord): string[] => (Array.isArray(mission.adrs) ? mission.adrs.filter((file): file is string => typeof file === 'string' && FILE_SAFE.test(file)).slice(0, MAX_ATTACH) : [])
-
-/** The attached records that are in this project's folder now (an attached file that was removed simply is not listed). */
-export const attachedDocs = (state: State, mission: MissionRecord): AdrDoc[] => attachedOf(mission).flatMap(file => docOf(state, file) ?? [])
-
-/** What Claude and the swarm agents read for a mission: the digest block, or '' with no ADR attached. */
-export const adrBlockFor = (state: State, mission: MissionRecord | null): string => (mission === null ? '' : digestBlock(attachedDocs(state, mission)))
-
-export function suggestFor(state: State, mission: MissionRecord | null, goal: string): Suggestion[] {
-  return suggest(goal, adrOf(state).registry.docs, mission === null ? [] : attachedOf(mission))
-}
-
-export async function setAttached(state: State, host: Host, file: string, on: boolean): Promise<void> {
-  const mission = activeMission(state)
-
-  if (mission === null) return say(state, host, 'attach ADR', false, ['no active mission: create one in Missions first'])
-  if (!FILE_SAFE.test(file) || docOf(state, file) === undefined) return say(state, host, 'attach ADR', false, [`${plain(file, 60)} is not an ADR in this project`])
-
-  const now = attachedOf(mission)
-
-  if (on && !now.includes(file) && now.length >= MAX_ATTACH) return say(state, host, 'attach ADR', false, [`a mission carries at most ${MAX_ATTACH} ADRs`])
-
-  mission.adrs = on ? [...new Set([...now, file])] : now.filter(each => each !== file)
-  record(mission, { type: on ? 'adr.attached' : 'adr.detached', note: plain(file, 120) })
-  saveLedger(state, host)
-  await mirrorDigest(state, host)
-  say(state, host, on ? 'attach ADR' : 'detach ADR', true, [`${file} ${on ? 'attached to' : 'detached from'} the mission`])
-  announce(state, host, `ADR ${docOf(state, file)?.number ?? file} ${on ? 'attached to' : 'detached from'} the mission`)
-}
-
-/** Where the swarm plugin reads the digest: a small, masked file under the console's own folder. */
-export const DIGEST_FILE = '.claude-flow/console/adr-digest.json'
-
-/**
- * Writes (or clears) the digest the swarm plugin appends to a spawned subagent's prompt. Only the active mission's attached ADRs; the
- * text is the same masked, capped block Claude reads. Never throws.
- */
-export async function mirrorDigest(state: State, host: Pick<Host, 'fs' | 'run'>): Promise<string | null> {
-  const mission = activeMission(state)
-  const docs = mission === null ? [] : attachedDocs(state, mission)
-  const body = JSON.stringify({ v: 1, atMs: Date.now(), mission: mission?.id ?? '', adrs: docs.slice(0, MAX_ATTACH).map(doc => ({ number: doc.number, file: doc.file, status: doc.status })), block: digestBlock(docs) })
-
-  return replaceFile(host, state.cwd, `${root(state)}/${DIGEST_FILE}`, body)
-}
-
-/** Files changed in the project: uncommitted work, and commits since the mission began. Read-only git. */
-export async function changedFiles(host: Pick<Host, 'run'>, cwd: string, sinceMs: number): Promise<string[]> {
-  const out = new Set<string>()
-  const status = await host.run(['git', '-C', cwd, 'status', '--porcelain'], 15_000).catch(() => null)
-
-  for (const line of (status?.stdout ?? '').split('\n')) {
-    const path = line.slice(3).split(' -> ').pop()?.trim().replace(/^"|"$/g, '')
-
-    if (path !== undefined && path !== '') out.add(path)
-  }
-
-  const log = await host.run(['git', '-C', cwd, 'log', `--since=${new Date(Math.max(0, sinceMs)).toISOString()}`, '--name-only', '--pretty=format:'], 15_000).catch(() => null)
-
-  for (const line of (log?.stdout ?? '').split('\n')) if (line.trim() !== '') out.add(line.trim())
-
-  return [...out].slice(0, 400)
-}
-
-/** The scope check for the active mission: a warning per accepted ADR whose paths a changed file falls under. Recorded as mission evidence; blocks nothing. */
-export async function scopeCheck(state: State, host: Pick<Host, 'run' | 'invalidate'>): Promise<string[]> {
-  const mission = activeMission(state)
-
-  if (mission === null) return ['no active mission']
-
-  const docs = attachedDocs(state, mission)
-  const report = checkScope(docs.length === 0 ? [] : await changedFiles(host, state.cwd, mission.createdAtMs), docs)
-  const lines = reportLines(report)
-
-  adrOf(state).scope = report
-  if (docs.length > 0) record(mission, { type: 'adr.scope', note: plain(lines.join(' | '), 400) })
-  host.invalidate()
-
-  return lines
-}
-
-/** A draft record for the active mission, as a proposeSpec: only the mission's own words; a person writes the decision. */
-export function draftSpec(state: State, host: Pick<Host, 'fs' | 'run' | 'invalidate' | 'toast'>, today: string): ActionSpec | null {
-  const mission = activeMission(state)
-
-  if (mission === null) return null
-
-  const finished = mission.events.filter(event => event.type === 'task.complete' || event.status === 'done')
-  const results = new Map<string, string>(finished.flatMap(event => (event.taskId !== undefined && event.note !== undefined ? [[event.taskId, event.note] as [string, string]] : [])))
-  const draft = draftFromMission({ objective: mission.objective, tasks: mission.tasks.map(task => ({ title: task.title, ...(results.has(task.id) && { result: results.get(task.id) as string }) })) }, attachedDocs(state, mission).flatMap(doc => doc.scope.slice(0, 2)), today)
-
-  return proposeSpec(state, host, draft.title, today, { ...(draft.context !== undefined && { context: draft.context }), ...(draft.decision !== undefined && { decision: draft.decision }), scope: draft.scope ?? [] })
-}
-
-export type AdrActions = {
-  reload: () => void
-  filter: (patch: Partial<AdrFilter>) => void
-  select: (file: string | null) => void
-  page: (to: number) => void
-  init: () => void
-  propose: (title: string) => void
-  status: (file: string, to: AdrStatus) => void
-  supersede: (file: string, byNumber: string) => void
-  attach: (file: string, on: boolean) => void
-  scope: () => void
-  draft: () => void
-}
-
-export type AdrWired = { host: Host; actions: AdrActions }
-const wired = new WeakMap<State, AdrWired>()
-export const adrWired = (state: State): AdrWired | undefined => wired.get(state)
-
-const today = (): string => new Date().toISOString().slice(0, 10)
-
-export function adrActions(state: State, host: Host, runner: Runner): AdrActions {
-  const adr = adrOf(state)
-  const reason = 'open the ADRs page to read the project’s ADR folder first'
-  const ask = (spec: ActionSpec | null, why: string) => runner.ask(spec, why)
-  const actions: AdrActions = {
-    reload: () => void loadAdrs(state, host),
-    filter: patch => {
-      adr.page = 0
-      adr.filter = { ...adr.filter, ...patch, status: patch.status !== undefined && (patch.status === 'all' || STATUSES.includes(patch.status as (typeof STATUSES)[number])) ? patch.status : adr.filter.status }
-      host.invalidate()
-    },
-    page: to => {
-      adr.page = Math.max(0, Math.floor(to))
-      host.invalidate()
-    },
-    select: file => {
-      adr.selected = file
-      host.invalidate()
-    },
-    init: () => ask(initSpec(state, host, today()), adr.dir === null ? 'cannot initialise' : 'this project already has an ADR folder'),
-    propose: title => ask(proposeSpec(state, host, title, today()), adr.dir === null ? reason : 'type a title for the record'),
-    status: (file, to) => {
-      const doc = docOf(state, file)
-
-      if (doc === undefined) return say(state, host, 'change ADR', false, [`${plain(file, 60)} is not an ADR here`])
-
-      void statusSpec(state, host, doc, to).then(spec => (spec === null ? undefined : ask(spec, 'nothing to change')))
-    },
-    supersede: (file, byNumber) => {
-      const doc = docOf(state, file)
-      const by = /^\d{1,6}$/.test(byNumber.trim()) ? docByNumber(state, Number(byNumber.trim())) : undefined
-
-      if (doc === undefined || by === undefined) return say(state, host, 'supersede ADR', false, ['give the number of the record that replaces this one'])
-
-      void statusSpec(state, host, doc, 'superseded', by).then(spec => (spec === null ? undefined : ask(spec, 'nothing to change')))
-    },
-    attach: (file, on) => void setAttached(state, host, file, on),
-    scope: () => void scopeCheck(state, host).then(lines => say(state, host, 'ADR scope check', true, lines)),
-    draft: () => ask(draftSpec(state, host, today()), 'no active mission to draft from, or no ADR folder yet'),
-  }
-
-  wired.set(state, { host, actions })
-
-  return actions
 }

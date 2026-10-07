@@ -5,7 +5,8 @@
  * entry only prepares the change, and the confirm that follows shows the diff and writes only on the person's own Yes.
  */
 import type { ActionSpec } from './actions'
-import { adrOf, adrWired, docByNumber, initSpec, proposeSpec } from './adr'
+import { adrOf, docByNumber, initSpec, proposeSpec } from './adr'
+import { adrWired } from './adr-actions'
 import { STATUSES, type AdrStatus } from './data/adr'
 import { plain } from './data/parse'
 import type { PaletteEntry } from './palette'
