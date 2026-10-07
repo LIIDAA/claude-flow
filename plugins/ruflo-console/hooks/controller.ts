@@ -31,6 +31,7 @@ import type { Actions } from './views/common'
 import { picturesOf } from './views/frames'
 import { pulseDue } from './pulse'
 import { refreshWorkflows } from './wf-live'
+import { syncWhatsNew } from './whatsnew'
 
 const ACTIVITY_BUCKET_MS = 5_000
 const PANE_WATCH_MS = 1_000
@@ -129,6 +130,7 @@ export function createController(state: State, host: Host): Controller {
       const before = previous === null ? null : factsOf(state, now)
 
       state.snapshot = snapshot
+      syncWhatsNew(state, host)
       record(state.events, diffEvents(previous, snapshot, now))
 
       // A mission that finished or lost a task is said in a toast too: the band's notice row reaches only a person looking at the console.

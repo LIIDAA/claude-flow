@@ -229,8 +229,22 @@ export const MORE_TOPICS: readonly HelpTopic[] = [
       { text: 'Settings has an Updates row: choose ask or auto, and press “check for an update now”.', go: { view: 'settings' } },
       { text: 'Restart Claude Code after an update so the new version loads.' },
     ],
-    related: ['settings', 'plugins'],
+    related: ['settings', 'plugins', 'whatsnew'],
     keywords: ['version', 'upgrade', 'newer', 'auto-update'],
+  },
+  {
+    id: 'whatsnew',
+    title: 'What’s new in your plugins',
+    group: 'Console',
+    summary: 'the changes in each installed ruflo plugin, newest first',
+    steps: [
+      { text: 'Open What’s new (TOOLS group, or /ruflo whatsnew). Each plugin’s own CHANGELOG.md is read from disk; nothing is fetched.', go: { view: 'whatsnew' } },
+      { text: 'Entries under “Since you last looked” are the ones you have not seen; the divider marks where you left off.' },
+      { text: 'A breaking change stays pinned at the top until you dismiss it.' },
+      { text: 'The “toast when something new lands” switch shows one short message per new version.' },
+    ],
+    related: ['updates', 'plugins'],
+    keywords: ['changelog', 'release', 'notes', 'new', 'breaking', 'version', 'changes'],
   },
   {
     id: 'headless',

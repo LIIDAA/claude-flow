@@ -41,6 +41,7 @@ import { runUpdateCheck } from './update-flow'
 import { claudeActions } from './mission-claude'
 import { UPDATES_KEY } from './updates'
 import { setToastMode, toggleToastMute } from './toasts'
+import { whatsnewActions } from './whatsnew'
 import { vectorActions } from './vector'
 import type { Actions } from './views/common'
 import { openTasks, selection } from './views/select'
@@ -121,6 +122,7 @@ export function actionsOf(state: State, host: Host, runner: Runner, steps: Steps
       mode: mode => setToastMode(state, host, mode),
       mute: source => toggleToastMute(state, host, source),
     },
+    whatsnew: whatsnewActions(state, host),
     checkUpdates: () => {
       state.updateNote = 'checking…'
       host.invalidate()

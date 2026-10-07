@@ -11,9 +11,9 @@ step() { printf "→ %s ... " "$1"; }
 ok()   { printf "PASS\n"; PASS=$((PASS+1)); }
 bad()  { printf "FAIL: %s\n" "$1"; FAIL=$((FAIL+1)); }
 
-step "1. plugin.json declares ruflo-console 0.37.0"
+step "1. plugin.json declares ruflo-console 0.38.0"
 grep -q '"name": "ruflo-console"' "$ROOT/.claude-plugin/plugin.json" \
-  && grep -q '"version": "0.37.0"' "$ROOT/.claude-plugin/plugin.json" && ok || bad "name/version"
+  && grep -q '"version": "0.38.0"' "$ROOT/.claude-plugin/plugin.json" && ok || bad "name/version"
 
 step "2. hooks.json names exactly one module and no classic hook commands"
 grep -q '"modules": \["./register.ts"\]' "$HOOKS/hooks.json" && ! grep -q '"command"' "$HOOKS/hooks.json" \
@@ -111,6 +111,11 @@ step "17. the toast policy copy is byte-identical to the canonical one (ADR-477)
 if [[ ! -f "$ROOT/../ruflo-mods/hooks/toast/policy.ts" ]]; then printf "SKIP (ruflo-mods is not beside this plugin)\n"
 elif cmp -s "$ROOT/../ruflo-mods/hooks/toast/policy.ts" "$HOOKS/toast-policy.ts"; then ok
 else bad "differs from ruflo-mods/hooks/toast/policy.ts: node scripts/sync-toast-policy.mjs"; fi
+
+step "18. CHANGELOG.md has an entry for the manifest version, and the What's new page makes no request of its own (ADR-478)"
+version=$(sed -n 's/^  "version": "\([0-9.]*\)".*/\1/p' "$ROOT/.claude-plugin/plugin.json" | head -1)
+if grep -qE "^## ${version//./\\.} [—–-] [0-9]{4}-[0-9]{2}-[0-9]{2}\s*$" "$ROOT/CHANGELOG.md" 2>/dev/null \
+  && ! grep -qE "fetchText|httpSend|\\.run\(|spawn" "$HOOKS/whatsnew.ts" "$HOOKS/views/whatsnew.ts" "$HOOKS/data/changelog.ts"; then ok; else bad "CHANGELOG.md lacks ## $version, or whatsnew code reaches the network"; fi
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]

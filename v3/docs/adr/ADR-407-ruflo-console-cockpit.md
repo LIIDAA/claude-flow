@@ -239,3 +239,29 @@ The recording driver aborts rather than type into Claude's own prompt. It never 
 
 - `plugins/ruflo-console/hooks/{state,harness,stream,bindings,controller}.ts`, `hooks/views/{pane,frames,menu,bar,terminal,xruv}.ts`, `hooks/gfx/{neon,boot,pictures}.ts`
 - PRs #3625–#3632 (band, BBS look, Wildcat round, neon boot, AI terminal, compact and focus fixes) and the 0.7.0 release (Skills, Hive-Mind, MetaHarness lab, scrollable framed terminal, clickable band and strip, now-first band, grouped menu)
+
+## Update 2026-10-07: the Settings page's section order (PR #3887)
+
+Section 11c describes Settings as an editor driven by `claude plugin configure`; it does not fix an order. The order is now deliberate, most
+consequential first, and long lists last. Checked against `plugins/ruflo-console/hooks/views/settings.ts` (the render function from the
+`rows.push(...section(...))` calls near its end; the change is commit 5a0e5bff4, merged as #3887).
+
+With no search text, the page shows these sections, top to bottom. Each is a folding section (`section()` in `hooks/views/common.ts`):
+its header toggles it for the session, and all are open by default except where noted.
+
+| # | section (header) | what is in it |
+|---|---|---|
+| 1 | Claude control & spending | the five items `ai-model-control`, `ai-model-confirm`, `ai-accept`, `ai-budget`, `ai-mission-cap`, and a dim line saying claude runs read-only in plan mode and codex in a read-only sandbox, which this view never widens |
+| 2 | AI terminal | the remaining `ai-*` items (model and other per-turn settings, saved here and applied to the next turn) |
+| 3 | Interface & updates | the `ui-*` items: nav style, Updates (ADR-428), Toasts and the per-source mute chips (ADR-477). Its right-hand note reads "the main nav, update checks, toasts" |
+| 4 | Remembered actions | the kinds the person chose "Always allow" for; folded by default when there are none |
+| 5 | ruflo config | the curated `ruflo config get / set` keys (`core-*`) |
+| 6 | Plugin options | the plugin picker, then the selected plugin's options from `claude plugin configure <plugin> --json` |
+
+What changed: Plugin options and ruflo config used to be the first two sections and are now the last two; the model-control, confirm,
+auto-accept and budget items moved out of AI terminal into their own first section; "Interface" became "Interface & updates". The
+levels (simple or advanced), "changed only", "read again" and the search box are unchanged and sit above the sections.
+
+With search text the page is a flat list grouped by source (`── UI`, `── ruflo-console`, and so on), not sections, so the order above does
+not apply and any setting is found in either level. `hooks/settings-palette.ts` lists headless commands (`settings-set` and the like), not
+sections; it needs no change and has none.
