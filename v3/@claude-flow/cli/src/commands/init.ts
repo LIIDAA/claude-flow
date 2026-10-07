@@ -866,6 +866,20 @@ const initClaudeAction = async (ctx: CommandContext): Promise<CommandResult> => 
       }
     }
 
+    // ADR-404 (amended: mods default-on in init) — enable the ruflo mod
+    // plugins in the committed .claude/settings.json, then install them with
+    // claude. Additive: the classic hooks just written stay the fallback.
+    // --no-mods opts out; --no-plugin-install writes settings only.
+    if (ctx.flags.mods !== false) {
+      output.writeln();
+      try {
+        const { applyMods } = await import('../mods/apply.js');
+        await applyMods(ctx.cwd, { scope: 'project', pluginInstall: ctx.flags.pluginInstall !== false && ctx.flags['plugin-install'] !== false, skipInTestEnv: true });
+      } catch (err) {
+        output.writeln(output.warning(`  ruflo mods not enabled: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    }
+
     if (!startDaemon && !startAll) {
       const bin = (process.argv[1] || '').includes('ruflo') ? 'ruflo' : 'claude-flow';
       output.writeln(output.bold('Next steps:'));
@@ -1166,6 +1180,17 @@ const wizardCommand: Command = {
         }
       }
 
+      // ADR-404 amendment — the wizard enables the mods as `ruflo init` does.
+      if (ctx.flags.mods !== false) {
+        output.writeln();
+        try {
+          const { applyMods } = await import('../mods/apply.js');
+          await applyMods(ctx.cwd, { scope: 'project', pluginInstall: ctx.flags.pluginInstall !== false && ctx.flags['plugin-install'] !== false, skipInTestEnv: true });
+        } catch (err) {
+          output.writeln(output.warning(`  ruflo mods not enabled: ${err instanceof Error ? err.message : String(err)}`));
+        }
+      }
+
       // Initialize embeddings if enabled
       let embeddingsInitialized = false;
       if (enableEmbeddings) {
@@ -1444,14 +1469,27 @@ const upgradeCommand: Command = {
     {
       name: 'settings',
       short: 's',
-      description: 'Merge new settings (Agent Teams, hooks) into existing settings.json',
+      description: 'Merge new settings (Agent Teams, hooks, ruflo mods) into existing settings.json',
       type: 'boolean',
       default: false,
+    },
+    {
+      // ADR-404 amendment — the same merge + plugin install as `ruflo init`.
+      name: 'mods',
+      description: 'Merge the ruflo mod plugins into .claude/settings.json and install them (also implied by --add-missing and --settings; --no-mods to skip)',
+      type: 'boolean',
+    },
+    {
+      name: 'plugin-install',
+      description: 'With mods: run claude plugin install (--no-plugin-install to merge settings only)',
+      type: 'boolean',
+      default: true,
     },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const addMissing = (ctx.flags['add-missing'] || ctx.flags.addMissing) as boolean;
     const upgradeSettings = (ctx.flags.settings) as boolean;
+    const upgradeMods = ctx.flags.mods === true || (ctx.flags.mods !== false && (addMissing || upgradeSettings));
 
     output.writeln();
     output.writeln(output.bold('Upgrading RuFlo'));
@@ -1487,6 +1525,15 @@ const upgradeCommand: Command = {
 
       spinner.succeed('Upgrade complete!');
       output.writeln();
+
+      // ADR-404 amendment — merge the mod plugins without clobbering: only
+      // keys that are absent are added, and each is reported.
+      if (upgradeMods) {
+        const { applyMods, describeAdded } = await import('../mods/apply.js');
+        const mods = await applyMods(ctx.cwd, { scope: 'project', pluginInstall: ctx.flags.pluginInstall !== false && ctx.flags['plugin-install'] !== false, skipInTestEnv: true });
+        result.settingsUpdated = [...(result.settingsUpdated ?? []), ...describeAdded(mods.install.added)];
+        output.writeln();
+      }
 
       // Show what was updated
       if (result.updated.length > 0) {
@@ -1668,6 +1715,19 @@ export const initCommand: Command = {
       description: 'Auto-start daemon after init',
       type: 'boolean',
       default: false,
+    },
+    {
+      // ADR-404 amendment — on by default; nothing loads where function hooks are off.
+      name: 'mods',
+      description: 'Enable the ruflo mod plugins in .claude/settings.json (default on; --no-mods to skip); classic hooks stay as fallback',
+      type: 'boolean',
+      default: true,
+    },
+    {
+      name: 'plugin-install',
+      description: 'With mods: refresh the ruflo marketplace and claude plugin install the mods (--no-plugin-install to write settings only)',
+      type: 'boolean',
+      default: true,
     },
     {
       name: 'with-embeddings',

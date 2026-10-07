@@ -35,6 +35,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { hostname, userInfo } from 'node:os';
+import { syncPolicyProjection } from '../mods/policy-projection.js';
 
 const POLICY_DIR = join('.claude-flow', 'policy');
 const POLICY_FILE = 'state.json';
@@ -142,7 +143,11 @@ function lockOwnerIsDead(lockPath: string): boolean {
   }
 }
 
-async function acquireLock(lockPath: string): Promise<() => void> {
+/**
+ * Exported for ADR-406 mission storage, which takes the same per-file lock
+ * (pid, pid namespace and boot id identify a dead owner) rather than a copy.
+ */
+export async function acquireLock(lockPath: string): Promise<() => void> {
   const started = Date.now();
   while (Date.now() - started < LOCK_WAIT_MS) {
     try {
@@ -240,6 +245,20 @@ function verifyStateAnchor(projectRoot: string, state: PolicyState | undefined):
 }
 
 async function writePolicyState(projectRoot: string, statePath: string, state: PolicyState): Promise<void> {
+  await writePolicyStateFiles(projectRoot, statePath, state);
+  // ADR-404: the ruflo mod reads Claude Code tool rules from a small
+  // projection, never from state.json. Written only after the state and its
+  // anchor are safely down; a failure here never fails the state write. A
+  // projection left stale by such a failure can only tighten, never loosen,
+  // a Claude Code verdict (the mod merges with `stricter`).
+  try {
+    syncPolicyProjection(projectRoot, state);
+  } catch (error) {
+    process.stderr.write(`[policy] claude-code projection not written: ${(error as Error).message}\n`);
+  }
+}
+
+async function writePolicyStateFiles(projectRoot: string, statePath: string, state: PolicyState): Promise<void> {
   const anchorPath = trustPaths(projectRoot).anchor;
   if (state.mode === 'enforce' || existsSync(anchorPath)) {
     const key = trustKey(projectRoot, true)!;

@@ -406,6 +406,15 @@ function main() {
     done();
   }
 
+  // ADR-404: when the ruflo mod records edits in-process it sets
+  // RUFLO_MODS_OWNS on the Claude Code process; this hook then stands down so
+  // an edit is recorded once, as hook-handler.cjs does. Telemetry only: the
+  // PreToolUse permission paths below never consult it.
+  if (subcommand === 'post-edit' &&
+      String(process.env.RUFLO_MODS_OWNS || '').split(',').some((owned) => owned.trim() === 'post-edit')) {
+    done();
+  }
+
   const stdinData = readStdinRaw();
   const event = parseEventJson(stdinData);
 
