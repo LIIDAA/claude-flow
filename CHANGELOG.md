@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Hive-mind gating that keeps local users working (ADR-476, #3338)** — `hive-mind_init` no longer returns `hiveToken`, and `spawn`, `consensus` `propose`, `broadcast`, `shutdown`, `memory` `set`/`delete` and `optimize-memory` (plus the existing `join`/`leave`/`vote`) now require an operator credential from **remote** callers (HTTP/WebSocket MCP). Local stdio MCP, `ruflo mcp exec`, the `hive-mind` CLI and in-process callers need no credential and no extra step. Remote clients set `RUFLO_HIVE_BOOTSTRAP_SECRET` (or read `.claude-flow/hive-mind/bootstrap.secret`, created 0600 by the first local `hive-mind init`) and send it as `bootstrapSecret`; `RUFLO_HIVE_REQUIRE_AUTH=1` applies the same rule to stdio on bridged servers. `state.json` is now written 0600 atomically and the hive directory 0700. Migration: clients that read `hiveToken` from the `init` response must drop that (it is `undefined`); over stdio they omit it everywhere. This is a speed bump, not a boundary, against a local prompt-injected agent that can read the files.
+
 ## [3.34.0] - 2026-07-31
 
 ### Added

@@ -21,28 +21,29 @@
  * call makes literally zero state change (no membership write, no vote
  * write), verified below by reloading state fresh from disk (simulating a
  * process restart/reopen) after each denial.
- *
- * Round 2 review feedback (#3339) correctly pointed out that requireHiveToken
- * alone doesn't "establish authorization" while hive-mind_init -- the
- * credential-issuance point -- was itself reachable by any caller (either to
- * mint the very first token, or to have the current one echoed back on
- * re-init). hive-mind_init now requires its own same-machine `bootstrapSecret`
- * (see getOrCreateBootstrapSecret()), and no longer returns `hiveToken` in its
- * response at all -- tests below read it via `getHiveTokenForCli()` instead,
- * the same same-machine accessor the CLI itself uses.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hiveMindTools, getHiveTokenForCli, getHiveBootstrapSecretForCli } from '../src/mcp-tools/hive-mind-tools.js';
+import { hiveMindTools, getHiveTokenForCli } from '../src/mcp-tools/hive-mind-tools.js';
+
+// ADR-476: these tests model an UNTRUSTED remote (HTTP) caller -- the only
+// caller class the capability token is a boundary for. Local stdio/CLI
+// callers need no token (see hive-mind-gate-matrix.test.ts).
+const REMOTE = { sessionId: 'sybil-test', transport: 'http' };
 
 function tool(name: string) {
   const t = hiveMindTools.find(t => t.name === name);
   if (!t) throw new Error(`tool not found: ${name}`);
-  return t;
+  return { ...t, handler: (input: Record<string, unknown>) => t.handler(input, REMOTE) };
 }
+
+// init is performed as the local operator (no context); the token is then
+// read the same way the CLI reads it -- init never returns it (ADR-476).
+const localInit = (input: Record<string, unknown>) =>
+  hiveMindTools.find(t => t.name === 'hive-mind_init')!.handler(input);
 
 // Reads the persisted state file directly -- a fresh read from disk, not
 // anything cached in-process, so it stands in for "the process restarted
@@ -69,10 +70,7 @@ describe('hive-mind_consensus / join / leave capability-token authentication', (
   });
 
   async function initHive(strategy: 'raft' | 'byzantine' | 'quorum'): Promise<string> {
-    const init = await tool('hive-mind_init').handler({
-      consensus: strategy,
-      bootstrapSecret: getHiveBootstrapSecretForCli(),
-    }) as any;
+    const init = await localInit({ consensus: strategy }) as any;
     expect(init.success).toBe(true);
     expect(init.hiveToken).toBeUndefined();
     const token = getHiveTokenForCli();

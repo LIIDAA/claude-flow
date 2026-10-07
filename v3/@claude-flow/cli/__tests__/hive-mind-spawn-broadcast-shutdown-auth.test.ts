@@ -33,16 +33,13 @@
  * re-reading state.json fresh off disk (simulating a process restart)
  * after each denial.
  *
- * Round 2 review (#3339) additionally found that requireHiveToken alone
- * doesn't "establish authorization" while hive-mind_init -- the
- * credential-issuance point itself -- was reachable by any caller (to mint
- * the first token, or have the current one echoed back on re-init).
- * hive-mind_init now requires its own same-machine `bootstrapSecret`
- * (getOrCreateBootstrapSecret()) and no longer returns `hiveToken` in its
- * response. Tests below read the token via `getHiveTokenForCli()` instead,
- * and a dedicated block covers the bootstrap-secret gate itself, plus a
- * real child-process CLI-command-level test (not just direct handler
- * calls) exercising `node bin/cli.js hive-mind init/spawn`.
+ * ADR-476 (rework of #3339): the gate is a boundary for REMOTE callers only.
+ * Local stdio/CLI/in-process callers need no credential (so existing flows
+ * keep working), and hive-mind_init never returns the token. These tests
+ * therefore model an untrusted HTTP caller by passing the server-built
+ * context `{ transport: 'http' }`; the full caller x credential matrix,
+ * env override, file permissions and no-leak guarantees live in
+ * hive-mind-gate-matrix.test.ts.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -50,7 +47,7 @@ import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hiveMindTools, getHiveTokenForCli, getHiveBootstrapSecretForCli } from '../src/mcp-tools/hive-mind-tools.js';
+import { hiveMindTools, getHiveTokenForCli } from '../src/mcp-tools/hive-mind-tools.js';
 
 const CLI = join(__dirname, '..', 'bin', 'cli.js');
 
@@ -69,7 +66,17 @@ function runCli(args: string[], cwd: string): { stdout: string; exit: number } {
   }
 }
 
+const REMOTE = { sessionId: 'auth-test', transport: 'http' };
+const SECRET = 'operator-secret-for-tests-0123456789';
+
 function tool(name: string) {
+  const t = hiveMindTools.find((t) => t.name === name);
+  if (!t) throw new Error(`tool not found: ${name}`);
+  return { ...t, handler: (input: Record<string, unknown>) => t.handler(input, REMOTE) };
+}
+
+/** The local operator (no context): what the CLI and stdio MCP use. */
+function localTool(name: string) {
   const t = hiveMindTools.find((t) => t.name === name);
   if (!t) throw new Error(`tool not found: ${name}`);
   return t;
@@ -93,19 +100,18 @@ describe('hive-mind_spawn / consensus(propose) / broadcast / shutdown capability
     dir = mkdtempSync(join(tmpdir(), 'hive-mind-auth-'));
     prevCwd = process.env.CLAUDE_FLOW_CWD;
     process.env.CLAUDE_FLOW_CWD = dir;
+    process.env.RUFLO_HIVE_BOOTSTRAP_SECRET = SECRET;
   });
 
   afterEach(() => {
+    delete process.env.RUFLO_HIVE_BOOTSTRAP_SECRET;
     if (prevCwd === undefined) delete process.env.CLAUDE_FLOW_CWD;
     else process.env.CLAUDE_FLOW_CWD = prevCwd;
     rmSync(dir, { recursive: true, force: true });
   });
 
   async function initHive(): Promise<string> {
-    const init = (await tool('hive-mind_init').handler({
-      consensus: 'raft',
-      bootstrapSecret: getHiveBootstrapSecretForCli(),
-    })) as any;
+    const init = (await localTool('hive-mind_init').handler({ consensus: 'raft' })) as any;
     expect(init.success).toBe(true);
     expect(init.hiveToken).toBeUndefined();
     return getHiveTokenForCli() as string;
@@ -324,15 +330,11 @@ describe('hive-mind_spawn / consensus(propose) / broadcast / shutdown capability
     expect(persisted.sharedMemory).toEqual({});
   });
 
-  describe('hive-mind_init bootstrap-secret gate (round 2 review, #3339)', () => {
+  describe('hive-mind_init operator-secret gate for remote callers (ADR-476)', () => {
     it('is denied without a bootstrapSecret on first-time (fresh) init, and mints no hive at all', async () => {
       const denied = (await tool('hive-mind_init').handler({ consensus: 'raft' })) as any;
       expect(denied.success).toBe(false);
-      expect(denied.error).toBe('bootstrapSecret is required');
-
-      // No state.json was ever written -- there is nothing to "reload":
-      // the whole point is that an unauthenticated first call must not be
-      // able to bootstrap a hive at all.
+      expect(denied.error).toMatch(/bootstrapSecret is required/);
       expect(existsSync(join(dir, '.claude-flow', 'hive-mind', 'state.json'))).toBe(false);
     });
 
@@ -346,43 +348,39 @@ describe('hive-mind_spawn / consensus(propose) / broadcast / shutdown capability
       expect(existsSync(join(dir, '.claude-flow', 'hive-mind', 'state.json'))).toBe(false);
     });
 
-    it('never echoes the real bootstrap secret back to a denied caller, even though denial forces it to be generated', async () => {
-      const denied = (await tool('hive-mind_init').handler({
-        consensus: 'raft',
-        bootstrapSecret: 'wrong',
-      })) as any;
-      // The bug this guards: requireBootstrapSecret() must generate the
-      // real secret server-side to compare against, but must never leak it
-      // in the response merely because a caller who doesn't have it asked.
-      expect(JSON.stringify(denied)).not.toContain(getHiveBootstrapSecretForCli());
+    it('never echoes the operator secret back to a denied caller', async () => {
+      const denied = (await tool('hive-mind_init').handler({ consensus: 'raft', bootstrapSecret: 'wrong' })) as any;
+      expect(JSON.stringify(denied)).not.toContain(SECRET);
     });
 
-    it('succeeds with the correct bootstrapSecret', async () => {
+    it('succeeds with the correct bootstrapSecret, and still does not return the token', async () => {
+      const ok = (await tool('hive-mind_init').handler({ consensus: 'raft', bootstrapSecret: SECRET })) as any;
+      expect(ok.success).toBe(true);
+      expect(ok.hiveToken).toBeUndefined();
+      expect(JSON.stringify(ok)).not.toContain(getHiveTokenForCli() as string);
+    });
+
+    it('a remote hiveToken cannot (re)initialize: init accepts only the operator secret', async () => {
       const token = await initHive();
-      expect(typeof token).toBe('string');
+      const denied = (await tool('hive-mind_init').handler({ consensus: 'byzantine', hiveToken: token })) as any;
+      expect(denied.success).toBe(false);
     });
 
-    it('re-init on an already-initialized hive is ALSO denied without the bootstrapSecret, and changes nothing (verified after a fresh state reload)', async () => {
+    it('re-init on an already-initialized hive is ALSO denied without the secret, and changes nothing (verified after a fresh state reload)', async () => {
       await initHive();
       const before = readPersistedState(dir);
 
       const denied = (await tool('hive-mind_init').handler({ consensus: 'byzantine', topology: 'ring' })) as any;
       expect(denied.success).toBe(false);
-      expect(denied.error).toBe('bootstrapSecret is required');
+      expect(denied.error).toMatch(/bootstrapSecret is required/);
 
-      const after = readPersistedState(dir);
-      expect(after).toEqual(before);
+      expect(readPersistedState(dir)).toEqual(before);
     });
 
-    it('re-init with the correct bootstrapSecret succeeds and keeps the existing hiveToken (does not rotate it)', async () => {
+    it('re-init with the correct secret succeeds and keeps the existing hiveToken (does not rotate it)', async () => {
       const token = await initHive();
-
-      const reinit = (await tool('hive-mind_init').handler({
-        consensus: 'byzantine',
-        bootstrapSecret: getHiveBootstrapSecretForCli(),
-      })) as any;
+      const reinit = (await tool('hive-mind_init').handler({ consensus: 'byzantine', bootstrapSecret: SECRET })) as any;
       expect(reinit.success).toBe(true);
-
       expect(getHiveTokenForCli()).toBe(token);
     });
   });
