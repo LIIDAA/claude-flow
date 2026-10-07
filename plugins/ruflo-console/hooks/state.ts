@@ -10,6 +10,7 @@ import type { ReadCache } from './data/files'
 import { emptyEvolve, type EvolveState } from './data/evolve'
 import { emptySkills, type SkillsState } from './data/skills'
 import type { UpdatesMode } from './updates'
+import type { Digest, ToastPrefs } from './toast-policy'
 import { emptyMemoryLab, type MemoryLabState } from './memory-lab'
 import { emptyVector, type VectorState } from './data/vector'
 import type { Snapshot } from './data/snapshot'
@@ -228,6 +229,10 @@ export type State = {
   nav: NavStyle
   /** Whether to check for a newer published ruflo-console: ask first (the default), update without asking, or never check. Kept in the plugin's store. */
   updates: UpdatesMode
+  /** The Toasts setting (ADR-477): which levels draw and which sources are muted. Kept in the plugin's store and mirrored to a file the other plugins read. */
+  toastPrefs: ToastPrefs
+  /** The console's own toasts, drawn or not, until the Events pass takes them in (bounded). */
+  toastLog: Digest[]
   /** What the last update check found, in a line, for Settings; empty until one has run. */
   updateNote: string
   /** A published version the person has not taken ("Not now"), shown on the band as a link to Settings; empty when there is none. */
@@ -352,6 +357,8 @@ export function newState(raw: PluginOptions | undefined): State {
     dockColumns: 0,
     nav: 'auto',
     updates: 'ask',
+    toastPrefs: { mode: 'all', muted: [] },
+    toastLog: [],
     updateNote: '',
     updateAvailable: '',
     navPick: null,

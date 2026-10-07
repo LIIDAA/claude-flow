@@ -3,6 +3,8 @@ import type { RenderElement } from 'claude-code'
 import { catalogOf } from '../plugin-catalog'
 import { AI_BUDGETS, CLAUDE_MODELS, CORE, DEFAULT_AI, LOOP_ROWS, pluginNames, OPTION_NOTES, SIMPLE, settingsOf, type CoreKey, type Level, type PluginConfig } from '../settings'
 import { NAV_STYLES } from '../state'
+import { TOAST_MODES, type ToastMode } from '../toast-policy'
+import { MUTABLE_SOURCES, summaryOf } from '../toasts'
 import { UPDATES_MODES, type UpdatesMode } from '../updates'
 import { button, clip, col, row, rule, section, text, THEME, type Ctx } from './common'
 
@@ -230,6 +232,48 @@ function uiItems(ctx: Ctx): Item[] {
         ),
       ],
     },
+    {
+      id: 'ui-toasts',
+      source: 'UI',
+      title: 'Toasts',
+      haystack: `toasts toast notifications popups messages mute silent quiet important levels all off console swarm protector mods ${summaryOf(ctx.state.toastPrefs)}`,
+      level: 'simple',
+      changed: ctx.state.toastPrefs.mode !== 'all' || ctx.state.toastPrefs.muted.length > 0,
+      rows: () => [
+        ...settingRows(ctx, {
+          key: 'ui-toasts',
+          title: 'Toasts',
+          description:
+            'the short messages ruflo plugins show over the transcript: all (every level), important (warnings and errors only), or off (none). Every toast is still kept on the Events page, drawn or not; one line each, secrets masked, an identical one is not repeated within a minute, and a source shows at most four a minute (errors are held and counted, never dropped)',
+          current: ctx.state.toastPrefs.mode,
+          isChanged: ctx.state.toastPrefs.mode !== 'all',
+          choices: TOAST_MODES,
+          defaultText: 'default all',
+          onChoice: value => ctx.act.toasts.mode(value as ToastMode),
+          fieldKey: 'st-ui-in-toasts',
+          fieldLabel: 'toasts',
+          fieldHint: '',
+          where: 'the ruflo plugins’ toasts',
+        }),
+        ...muteRows(ctx),
+      ],
+    },
+  ]
+}
+
+/** The Toasts setting's second line: one chip per source that can toast, filled while that source is muted (ADR-477). */
+function muteRows(ctx: Ctx): RenderElement[] {
+  const { muted } = ctx.state.toastPrefs
+
+  return [
+    row(
+      ctx,
+      [
+        ctx.kit.Text({ dimColor: true, children: '     mute a source: ' }),
+        ...MUTABLE_SOURCES.map(source => ctx.kit.Button({ key: `st-toast-mute-${source}`, label: ` ${muted.includes(source) ? '✕ muted' : '○'} ${source} `, plain: true, ...(muted.includes(source) && { variant: 'primary' as const }), onPress: () => ctx.act.toasts.mute(source) })),
+      ],
+      'st-toast-mute-row',
+    ),
   ]
 }
 
@@ -356,7 +400,7 @@ export function settingsView(ctx: Ctx): RenderElement {
   // Most important first: what Claude may do and spend, then the AI terminal, the interface, and the long lists last.
   rows.push(...section(ctx, 'safety', 'Claude control & spending', 'what Claude may do and what it may spend', [...safety, text(ctx, ' claude runs read-only in plan mode and codex in a read-only sandbox: this view never widens either.', { dimColor: true })]))
   rows.push(...section(ctx, 'ai', 'AI terminal', 'claude -p and codex exec: saved here, applied to the next turn', aiRest))
-  rows.push(...section(ctx, 'ui', 'Interface & updates', 'the main nav, update checks', shown.filter(item => item.id.startsWith('ui-')).flatMap(item => item.rows())))
+  rows.push(...section(ctx, 'ui', 'Interface & updates', 'the main nav, update checks, toasts', shown.filter(item => item.id.startsWith('ui-')).flatMap(item => item.rows())))
   rows.push(...section(ctx, 'allowed', 'Remembered actions', `${ctx.state.allowed.size} kind${ctx.state.allowed.size === 1 ? '' : 's'} not asked again`, rememberedRows(ctx), ctx.state.allowed.size > 0))
   rows.push(...section(ctx, 'config', 'ruflo config', settings.coreLoading ? 'reading…' : 'ruflo config get / set', shown.filter(item => item.id.startsWith('core-')).flatMap(item => item.rows())))
   rows.push(...section(ctx, 'options', 'Plugin options', `${names.length} ruflo plugins with options`, pluginRows))

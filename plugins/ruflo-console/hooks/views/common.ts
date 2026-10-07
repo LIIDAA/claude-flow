@@ -31,6 +31,7 @@ import { START_LABEL, type StartId } from '../starts'
 import type { MoreSkillActions } from '../skills-lab'
 import { VIEWS, type HarnessId, type NavStyle, type State, type ViewId } from '../state'
 import type { UpdatesMode } from '../updates'
+import type { ToastMode } from '../toast-policy'
 import { chip, COST_CHIP } from '../menu-colors'
 import { accentOfView } from '../nav-state'
 import type { VectorActions } from '../vector'
@@ -125,6 +126,8 @@ export type Actions = {
   updates: (mode: UpdatesMode) => void
   /** Checks now, whatever the daily gate or an off setting says (it still asks before installing, and skips a development checkout). */
   checkUpdates: () => void
+  /** The Toasts setting (ADR-477): which levels draw (all, important, off), and muting or unmuting one source's toasts (saved; every toast is still recorded). */
+  toasts: { mode: (mode: ToastMode) => void; mute: (source: string) => void }
   /** Opens or closes a collapsible section (`<view>/<id>`). */
   toggle: (key: string) => void
   /** The Workflows page: cursor keys, the inspector's tab, the confirm-gated ruflo agent verbs, and naming a transcript's path. */

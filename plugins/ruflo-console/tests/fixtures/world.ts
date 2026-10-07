@@ -38,6 +38,8 @@ export type World = {
   /** Every path the mod asked fs.stat for, including cached and refused reads. */
   stats: string[]
   inputs: string[]
+  /** The lines the console drew with `$.ui.toast` (ADR-477: after the shared policy). */
+  toasts: string[]
   /** Prompts the mod submitted to the primary session (`$.prompt.submit`). */
   prompts: string[]
   /** Text the mod put in the prompt box (`$.prompt.fill`). */
@@ -93,6 +95,7 @@ export function worldOf(on: On, files: Readonly<Record<string, string>>, options
     reads: [],
     stats: [],
     inputs: [],
+    toasts: [],
     prompts: [],
     fills: [],
     blits: [],
@@ -180,7 +183,7 @@ export function worldOf(on: On, files: Readonly<Record<string, string>>, options
 
     return { value: {} }
   })
-  on('ui.toast', () => ({ value: undefined }))
+  on('ui.toast', ($, e) => (world.toasts.push(e.text), { value: undefined }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
 

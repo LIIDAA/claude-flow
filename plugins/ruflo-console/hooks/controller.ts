@@ -11,7 +11,7 @@ import { memmapProbe } from './data/memmap'
 import { memoryHealthProbe } from './data/memory-health'
 import { X_PROBES } from './data/xruv'
 import { diffEvents, record } from './data/events'
-import { agentName, announceChanges, factsOf, segmentOf } from './notices'
+import { agentName, announceChanges, factsOf, segmentOf, TOASTED_KEYS } from './notices'
 import { plain } from './data/parse'
 import { readSnapshot } from './data/snapshot'
 import { markPicture } from './gfx/pictures'
@@ -131,7 +131,8 @@ export function createController(state: State, host: Host): Controller {
       state.snapshot = snapshot
       record(state.events, diffEvents(previous, snapshot, now))
 
-      if (before !== null) announceChanges(state, before, now)
+      // A mission that finished or lost a task is said in a toast too: the band's notice row reaches only a person looking at the console.
+      if (before !== null) for (const draft of announceChanges(state, before, now)) if (TOASTED_KEYS.has(draft.key)) host.toast(draft.text.slice(0, 120), 8000, draft.level === 'bad' ? 'error' : draft.level)
 
       if (route !== null && route.agent !== state.ruflo.route?.agent) record(state.events, [{ atMs: now, kind: 'learning', text: `router picked ${route.agent} (${Math.round(route.confidence * 100)}%)` }])
 
