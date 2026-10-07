@@ -156,16 +156,16 @@ function aiItems(ctx: Ctx): Item[] {
   })
 
   return [
-    one('model', 'Claude model', 'the model claude -p uses for AI terminal turns (the CLI’s default when unset)', ai.claudeModel, CLAUDE_MODELS, ai.claudeModel !== DEFAULT_AI.claudeModel, value => ctx.act.settings.ai({ claudeModel: value as (typeof CLAUDE_MODELS)[number] }), 'model haiku sonnet opus'),
-    one('budget', 'Turn budget (USD)', 'claude -p --max-budget-usd: the most one turn may spend; the sandbox stays read-only', String(ai.budgetUsd), AI_BUDGETS.map(String), ai.budgetUsd !== DEFAULT_AI.budgetUsd, value => ctx.act.settings.ai({ budgetUsd: Number(value) as (typeof AI_BUDGETS)[number] }), 'cost spend cap'),
-    one('guidance', 'Mission guidance', 'after a mission goal is entered, claude -p writes detailed guidance by lifecycle stage and suggests ruflo capabilities to bring in (it asks first unless always accept)', ai.guidance ? 'on' : 'off', ['on', 'off'], !ai.guidance, value => ctx.act.settings.ai({ guidance: value === 'on' }), 'mission goal guidance advice suggestions'),
-    ...LOOP_ROWS.map(row => one(row.id, row.title, row.description, row.current(ai), row.options, row.isChanged(ai), value => ctx.act.settings.ai(row.patch(value)), row.extra)),
     one('model-control', 'Claude control', 'how far Claude may drive this console with its console_* tools: off, read (look and open pages), write (also fill fields and run local actions), manage (also network), full (also spend, deploy, delete); takes effect in a new session or /reload-plugins', ai.modelControl, ['off', 'read', 'write', 'manage', 'full'], ai.modelControl !== 'off', value => ctx.act.settings.ai({ modelControl: value as typeof ai.modelControl }), 'claude control drive computer use tools autonomy model'),
     one('model-confirm', 'Claude control: confirm', 'auto (the default) lets Claude’s call confirm itself, within the level above, so it runs unattended (every call is logged on Overview), except an action that reaches the network, spends or deletes: that always waits for your Yes; ask leaves each action waiting for your Yes in the console', ai.modelConfirm, ['ask', 'auto'], ai.modelConfirm !== 'auto', value => ctx.act.settings.ai({ modelConfirm: value === 'auto' ? 'auto' : 'ask' }), 'claude control confirm auto ask approve'),
+    one('accept', 'Ask before each AI turn', 'always accept sends claude, codex and swarm turns straight out (read-only, plan mode, under the budget); ruflo commands still ask', ai.autoAccept ? 'always accept' : 'ask each time', ['ask each time', 'always accept'], ai.autoAccept, value => ctx.act.settings.ai({ autoAccept: value === 'always accept' }), 'confirm accept approve'),
+    one('budget', 'Turn budget (USD)', 'claude -p --max-budget-usd: the most one turn may spend; the sandbox stays read-only', String(ai.budgetUsd), AI_BUDGETS.map(String), ai.budgetUsd !== DEFAULT_AI.budgetUsd, value => ctx.act.settings.ai({ budgetUsd: Number(value) as (typeof AI_BUDGETS)[number] }), 'cost spend cap'),
+    one('mission-cap', 'Mission spend cap (USD)', 'auto-run pauses when one mission’s spend reaches this (list-price estimate; empty means no cap)', ai.missionCapUsd, [], ai.missionCapUsd !== '', value => ctx.act.settings.ai({ missionCapUsd: value.trim() }), 'mission cap budget spend cost'),
+    one('model', 'Claude model', 'the model claude -p uses for AI terminal turns (the CLI’s default when unset)', ai.claudeModel, CLAUDE_MODELS, ai.claudeModel !== DEFAULT_AI.claudeModel, value => ctx.act.settings.ai({ claudeModel: value as (typeof CLAUDE_MODELS)[number] }), 'model haiku sonnet opus'),
+    one('guidance', 'Mission guidance', 'after a mission goal is entered, claude -p writes detailed guidance by lifecycle stage and suggests ruflo capabilities to bring in (it asks first unless always accept)', ai.guidance ? 'on' : 'off', ['on', 'off'], !ai.guidance, value => ctx.act.settings.ai({ guidance: value === 'on' }), 'mission goal guidance advice suggestions'),
+    ...LOOP_ROWS.map(row => one(row.id, row.title, row.description, row.current(ai), row.options, row.isChanged(ai), value => ctx.act.settings.ai(row.patch(value)), row.extra)),
     one('ctx-mission', 'Mission context in Claude’s prompt', 'the active mission and task ride in Claude’s system prompt, and change only when the task does (a changed prompt makes Claude re-read the chat)', ai.missionContext ? 'on' : 'off', ['on', 'off'], !ai.missionContext, value => ctx.act.settings.ai({ missionContext: value === 'on' }), 'mission context prompt cache claude'),
     one('loop-gates', 'Mission gates', 'your own commands a mission may run to verify a task, one per line; each asks first and shows its exact argv; no shell characters', ai.loopGates, [], ai.loopGates !== '', value => ctx.act.settings.ai({ loopGates: value.slice(0, 800) }), 'gates verify tests smoke evidence'),
-    one('mission-cap', 'Mission spend cap (USD)', 'auto-run pauses when one mission’s spend reaches this (list-price estimate; empty means no cap)', ai.missionCapUsd, [], ai.missionCapUsd !== '', value => ctx.act.settings.ai({ missionCapUsd: value.trim() }), 'mission cap budget spend cost'),
-    one('accept', 'Ask before each AI turn', 'always accept sends claude, codex and swarm turns straight out (read-only, plan mode, under the budget); ruflo commands still ask', ai.autoAccept ? 'always accept' : 'ask each time', ['ask each time', 'always accept'], ai.autoAccept, value => ctx.act.settings.ai({ autoAccept: value === 'always accept' }), 'confirm accept approve'),
   ]
 }
 
@@ -348,12 +348,18 @@ export function settingsView(ctx: Ctx): RenderElement {
   else if (config === 'error') pluginRows.push(text(ctx, ` ${settings.plugin} has no readable options (is it installed? claude plugin configure ${settings.plugin}@ruflo --json)`, { color: THEME.warn }))
   else for (const item of shown.filter(candidate => candidate.id.startsWith(`${settings.plugin}-`))) pluginRows.push(...item.rows())
 
-  rows.push(...section(ctx, 'options', 'Plugin options', `${names.length} ruflo plugins with options`, pluginRows))
-  rows.push(...section(ctx, 'config', 'ruflo config', settings.coreLoading ? 'reading…' : 'ruflo config get / set', shown.filter(item => item.id.startsWith('core-')).flatMap(item => item.rows())))
-  rows.push(...section(ctx, 'ai', 'AI terminal', 'claude -p and codex exec: saved here, applied to the next turn', [...shown.filter(item => item.id.startsWith('ai-')).flatMap(item => item.rows()), text(ctx, ' claude runs read-only in plan mode and codex in a read-only sandbox: this view never widens either.', { dimColor: true })]))
+  const aiRows = shown.filter(item => item.id.startsWith('ai-'))
+  const safetyIds = new Set(['ai-model-control', 'ai-model-confirm', 'ai-accept', 'ai-budget', 'ai-mission-cap'])
+  const safety = aiRows.filter(item => safetyIds.has(item.id)).flatMap(item => item.rows())
+  const aiRest = aiRows.filter(item => !safetyIds.has(item.id)).flatMap(item => item.rows())
 
-  rows.push(...section(ctx, 'ui', 'Interface', 'the main nav', shown.filter(item => item.id.startsWith('ui-')).flatMap(item => item.rows())))
+  // Most important first: what Claude may do and spend, then the AI terminal, the interface, and the long lists last.
+  rows.push(...section(ctx, 'safety', 'Claude control & spending', 'what Claude may do and what it may spend', [...safety, text(ctx, ' claude runs read-only in plan mode and codex in a read-only sandbox: this view never widens either.', { dimColor: true })]))
+  rows.push(...section(ctx, 'ai', 'AI terminal', 'claude -p and codex exec: saved here, applied to the next turn', aiRest))
+  rows.push(...section(ctx, 'ui', 'Interface & updates', 'the main nav, update checks', shown.filter(item => item.id.startsWith('ui-')).flatMap(item => item.rows())))
   rows.push(...section(ctx, 'allowed', 'Remembered actions', `${ctx.state.allowed.size} kind${ctx.state.allowed.size === 1 ? '' : 's'} not asked again`, rememberedRows(ctx), ctx.state.allowed.size > 0))
+  rows.push(...section(ctx, 'config', 'ruflo config', settings.coreLoading ? 'reading…' : 'ruflo config get / set', shown.filter(item => item.id.startsWith('core-')).flatMap(item => item.rows())))
+  rows.push(...section(ctx, 'options', 'Plugin options', `${names.length} ruflo plugins with options`, pluginRows))
 
   return col(ctx, rows, 'settings')
 }
