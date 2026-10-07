@@ -34,11 +34,19 @@ afterEach(() => {
 
 function env(extra: Record<string, string> = {}) {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-e2e-'));
+  // The HTTP server's pid file lives in os.tmpdir() and is machine-wide, so a
+  // concurrent server from another test file (mcp-http-protocol-tools-2990)
+  // makes `mcp start` exit 1 ("already running"). Give this run its own tmpdir.
+  const tmp = path.join(dir, 'tmp');
+  fs.mkdirSync(tmp, { recursive: true });
   return {
     ...process.env,
     CLAUDE_FLOW_CWD: dir,
     CLAUDE_FLOW_MCP_TOOLS: 'all',
     RUFLO_DAEMON_AUTOSTART: '0',
+    TMPDIR: tmp,
+    TEMP: tmp,
+    TMP: tmp,
     ...extra,
   };
 }
