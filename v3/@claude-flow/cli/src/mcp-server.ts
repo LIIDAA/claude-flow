@@ -57,6 +57,12 @@ export interface MCPServerOptions {
   daemonize?: boolean;
   timeout?: number;
   requestTimeoutMs?: number;
+  /**
+   * Bearer token every HTTP request must present (`Authorization: Bearer <token>`).
+   * http transport only. Prefer RUFLO_MCP_HTTP_TOKEN / a token file over this
+   * field's CLI flag so the secret stays out of argv. Never logged or emitted.
+   */
+  authToken?: string;
 }
 
 /**
@@ -198,22 +204,67 @@ export function isUnauthenticatedHttpAllowed(env: NodeJS.ProcessEnv = process.en
 
 /**
  * The full startHttpServer() authorization gate, as a pure function:
- * true means "refuse to start" (see the thrown error for why). Extracted
- * so the exact decision contract (not just its two inputs individually) is
- * directly unit-testable without spawning a process or binding a port.
- * Exported for tests.
+ * true means "refuse to start" (see the thrown error for why).
+ *
+ * A non-loopback bind is allowed when requests are authenticated (a bearer
+ * token is configured on the http transport) or the operator explicitly opts
+ * out with RUFLO_MCP_ALLOW_UNAUTHENTICATED_HTTP=1. Loopback binds are never
+ * refused, with or without a token. Exported for tests.
  */
 export function shouldRefuseUnauthenticatedHttp(
   host: string,
   env: NodeJS.ProcessEnv = process.env,
+  authenticated = false,
 ): boolean {
-  return !isLoopbackHost(host) && !isUnauthenticatedHttpAllowed(env);
+  return !isLoopbackHost(host) && !authenticated && !isUnauthenticatedHttpAllowed(env);
+}
+
+/** Printable ASCII without space (RFC 6750 token-ish), 16-512 chars. */
+const AUTH_TOKEN_PATTERN = /^[\x21-\x7e]{16,512}$/;
+
+/**
+ * Resolve the HTTP bearer token. Precedence: explicit value (CLI flag), token
+ * file, then RUFLO_MCP_HTTP_TOKEN. An unset/empty env var means "no token";
+ * a token that is set but malformed throws, so a typo can never silently
+ * start the server unauthenticated. Exported for tests.
+ */
+export function resolveMcpHttpAuthToken(
+  input: { token?: string; tokenFile?: string } = {},
+  env: NodeJS.ProcessEnv = process.env,
+  readFile: (p: string) => string = (p) => fs.readFileSync(p, 'utf8'),
+): string | undefined {
+  let raw: string | undefined;
+  let source = '';
+  if (input.token !== undefined) {
+    raw = input.token;
+    source = '--auth-token';
+  } else if (input.tokenFile !== undefined) {
+    source = '--auth-token-file';
+    try {
+      raw = readFile(input.tokenFile).replace(/\r?\n$/, '');
+    } catch {
+      throw new Error('Could not read the MCP HTTP auth token file given to --auth-token-file');
+    }
+  } else if (env.RUFLO_MCP_HTTP_TOKEN !== undefined && env.RUFLO_MCP_HTTP_TOKEN !== '') {
+    raw = env.RUFLO_MCP_HTTP_TOKEN;
+    source = 'RUFLO_MCP_HTTP_TOKEN';
+  }
+  if (raw === undefined) return undefined;
+  if (!AUTH_TOKEN_PATTERN.test(raw)) {
+    // The value is deliberately not echoed.
+    throw new Error(
+      `Invalid MCP HTTP auth token from ${source}: it must be 16-512 printable ASCII characters with no spaces`
+    );
+  }
+  return raw;
 }
 
 /**
  * Default configuration
  */
-const DEFAULT_OPTIONS: Required<MCPServerOptions> = {
+type ResolvedMCPServerOptions = Required<Omit<MCPServerOptions, 'authToken'>> & { authToken?: string };
+
+const DEFAULT_OPTIONS: ResolvedMCPServerOptions = {
   transport: 'stdio',
   host: 'localhost',
   port: 3000,
@@ -295,7 +346,7 @@ export function assessMcpSchemaOverhead(
  * Manages the lifecycle of the MCP server process
  */
 export class MCPServerManager extends EventEmitter {
-  private options: Required<MCPServerOptions>;
+  private options: ResolvedMCPServerOptions;
   private process?: ChildProcess;
   private server?: Server;
   private startTime?: Date;
@@ -367,7 +418,7 @@ export class MCPServerManager extends EventEmitter {
     const startTime = performance.now();
     this.startTime = new Date();
 
-    this.emit('starting', { options: this.options });
+    this.emit('starting', { options: { ...this.options, authToken: this.options.authToken ? '[redacted]' : undefined } });
 
     try {
       if (this.options.transport === 'stdio') {
@@ -945,6 +996,33 @@ export class MCPServerManager extends EventEmitter {
    * Start HTTP server in-process
    */
   private async startHttpServer(): Promise<void> {
+    // Authorization gate first, before any import or bind: a refused start must
+    // not depend on (or touch) anything else.
+    const authToken = this.options.authToken || undefined;
+    if (authToken && this.options.transport !== 'http') {
+      // The standalone websocket transport has no working token check, so a
+      // token there would be a false promise of protection.
+      throw new Error('An MCP HTTP auth token is only supported with --transport http');
+    }
+    if (shouldRefuseUnauthenticatedHttp(this.options.host, process.env, !!authToken)) {
+      // No ToolAuthorizer is wired below: @claude-flow/mcp's tool-call
+      // authorization is fully opt-in (requireToolAuthorization/toolAuthorizer),
+      // so without this check every registered tool (memory_*, hooks_*,
+      // agentdb_*, hive-mind_*, ...) would be callable by any client that can
+      // reach this host:port, unauthenticated — the same shape as
+      // CVE-2026-81735 (CVSS 10/10, UI-TARS-desktop mcp-http-server: optional
+      // auth middleware never wired by the integrating CLI + a non-loopback
+      // bind). Loopback stays unaffected; this only gates an explicit
+      // non-default `--host`. A configured bearer token (below) lifts the gate.
+      throw new Error(
+        `Refusing to start the MCP HTTP server on non-loopback host "${this.options.host}": ` +
+          'this server is unauthenticated unless a token is set, so every registered MCP tool ' +
+          'would be reachable over the network. Set RUFLO_MCP_HTTP_TOKEN (or --auth-token-file) ' +
+          'to require a bearer token, bind to a loopback host (127.0.0.1, ::1, or localhost), or set ' +
+          'RUFLO_MCP_ALLOW_UNAUTHENTICATED_HTTP=1 to acknowledge the risk and proceed ' +
+          '(e.g. when a trusted reverse proxy or network boundary already enforces auth).'
+      );
+    }
     // Dynamically import the MCP server package
     // FIX for issue #942: Use proper package import instead of broken relative path
     const { createMCPServer } = await import('@claude-flow/mcp');
@@ -986,25 +1064,6 @@ export class MCPServerManager extends EventEmitter {
     // Use one MCP server with two HTTP transports for the localhost default.
     // Both loopback sockets therefore share sessions, tools, and notifications.
     const dualLoopback = this.options.host === 'localhost';
-    if (shouldRefuseUnauthenticatedHttp(this.options.host)) {
-      // No ToolAuthorizer is wired below: @claude-flow/mcp's tool-call
-      // authorization is fully opt-in (requireToolAuthorization/toolAuthorizer),
-      // so without this check every registered tool (memory_*, hooks_*,
-      // agentdb_*, hive-mind_*, ...) would be callable by any client that can
-      // reach this host:port, unauthenticated — the same shape as
-      // CVE-2026-81735 (CVSS 10/10, UI-TARS-desktop mcp-http-server: optional
-      // auth middleware never wired by the integrating CLI + a non-loopback
-      // bind). Loopback stays unaffected; this only gates an explicit
-      // non-default `--host`.
-      throw new Error(
-        `Refusing to start the MCP HTTP server on non-loopback host "${this.options.host}": ` +
-          'this server has no per-tool authorization by default, so every registered MCP tool ' +
-          'would be reachable unauthenticated over the network. Bind to a loopback host ' +
-          '(127.0.0.1, ::1, or localhost) instead, or set ' +
-          'RUFLO_MCP_ALLOW_UNAUTHENTICATED_HTTP=1 to acknowledge the risk and proceed ' +
-          '(e.g. when a trusted reverse proxy or network boundary already enforces auth).'
-      );
-    }
     const mcpServer = createMCPServer(
       {
         name: 'Claude-Flow MCP Server V3',
@@ -1016,6 +1075,9 @@ export class MCPServerManager extends EventEmitter {
         enableMetrics: true,
         enableCaching: true,
         requestTimeout: this.options.requestTimeoutMs,
+        auth: authToken
+          ? { enabled: true, method: 'token', tokens: [authToken] }
+          : undefined,
       },
       logger
     );
