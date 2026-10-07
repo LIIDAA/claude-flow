@@ -58,6 +58,12 @@
       "description": "Append a short note naming the ruflo swarm (id, topology, strategy, read from disk) to the prompt of each subagent Claude Code spawns.",
       "default": false
     },
+    "injectAdrs": {
+      "type": "boolean",
+      "title": "ADRs in subagent prompts",
+      "description": "When a ruflo-console mission has ADRs attached, append the accepted decisions (a short, masked digest from .claude-flow/console/adr-digest.json) to the prompt of each subagent Claude Code spawns. Nothing is added when no ADR is attached.",
+      "default": true
+    },
     "audit": {
       "type": "boolean",
       "title": "Audit trail",

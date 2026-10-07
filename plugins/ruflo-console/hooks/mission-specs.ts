@@ -3,6 +3,7 @@ import type { ActionSpec } from './actions'
 import { plain, type TaskRecord } from './data/parse'
 import { stageOf, toMissionPlan, type Profile } from './goap'
 import type { Host } from './host'
+import { adrBlockFor } from './adr'
 import { activeMission, instructionOf, mcOf, nextTask, record, rufloTaskOf, saveLedger } from './mission-control'
 import type { LedgerTask, MissionRecord } from './mission-types'
 import { CLI_PREFIXES, type State } from './state'
@@ -147,7 +148,7 @@ export const isInflight = (task: LedgerTask): boolean => inflight.has(task)
 
 /** `isReady` replaces the one-at-a-time check for a caller that has its own bound (autopilot's `startable`); without it the mission's own `nextTask` rule applies. */
 export function dispatchSpec(state: State, host: Host, mission: MissionRecord, task: LedgerTask, send: (text: string) => Promise<void>, isReady?: (mission: MissionRecord, tasks: readonly TaskRecord[], task: LedgerTask) => boolean): ActionSpec {
-  const text = instructionOf(mission, task)
+  const text = instructionOf(mission, task, adrBlockFor(state, mission))
 
   return {
     label: `hand task ${task.id} to Claude: ${task.title}`,

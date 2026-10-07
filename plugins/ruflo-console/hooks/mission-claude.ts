@@ -9,6 +9,7 @@ import type { Host } from './host'
 import { activeMission, derive, mcOf, nextTask, record, saveLedger } from './mission-control'
 import { CONTEXT_SECTION_ID, contextEnabled, missionContextKey, missionContextText, turnNote, type TurnReason } from './mission-context'
 import { armed, isTick, parseLoop, rearmCommand, startCommand, stop, stopRequest, tick, tickPlan, type LoopState } from './mission-loop'
+import { adrBlockFor, attachedOf, scopeCheck } from './adr'
 import { evidenceEvent, parseGates } from './mission-verify'
 import { costOf, capOf } from './mission-guard'
 import { plain } from './data/parse'
@@ -49,9 +50,10 @@ export function contextSection(state: State): { id: string; text: string; scope:
   const { task, status } = currentTask(state, mission)
   const loop = loopOf(mission)
   const info = loop === null || loop.status === 'idle' ? null : { interval: loop.interval, status: loop.status }
-  const key = missionContextKey(mission, task, info, status)
+  const adrBlock = adrBlockFor(state, mission)
+  const key = missionContextKey(mission, task, info, status, adrBlock)
 
-  if (held?.key !== key) held = { key, text: missionContextText(mission, task, info, status) }
+  if (held?.key !== key) held = { key, text: missionContextText(mission, task, info, status, adrBlock) }
 
   return { id: CONTEXT_SECTION_ID, text: held.text, scope: 'session' }
 }
@@ -141,8 +143,12 @@ export function claudeActions(state: State, host: Host, runner: Runner): Pick<Mi
               if (result === null || result.exitCode !== 0) failed += 1
             }
 
+            // ADR-480: with ADRs attached, the changed files are compared with their scope. A warning in the record; it never changes the gates' result.
+            const adrLines = attachedOf(mission).length > 0 ? await scopeCheck(state, host).catch(() => []) : []
+            const adrWarnings = adrLines.filter(line => line.startsWith('warning')).length
+
             saveLedger(state, host)
-            say('gates', failed === 0, failed === 0 ? `all ${gates.length} passed` : `${failed} of ${gates.length} did not pass: see Evidence`)
+            say('gates', failed === 0, `${failed === 0 ? `all ${gates.length} passed` : `${failed} of ${gates.length} did not pass: see Evidence`}${adrLines.length > 0 ? `; ADR scope: ${adrWarnings === 0 ? 'no warning' : `${adrWarnings} warning${adrWarnings === 1 ? '' : 's'} in the record`}` : ''}`)
           },
         },
         'nothing to run',

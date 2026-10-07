@@ -9,6 +9,7 @@ import { askedBy } from '../data/room'
 import type { RoomActions } from '../room'
 import type { WatchActions } from '../watch'
 import type { WhatsNewActions } from '../whatsnew'
+import type { AdrActions } from '../adr'
 import type { EventsActions } from '../events-ui'
 import type { TimelineActions } from '../timeline-ui'
 import type { Attention } from './attention'
@@ -131,6 +132,8 @@ export type Actions = {
   toasts: { mode: (mode: ToastMode) => void; mute: (source: string) => void }
   /** What's new (ADR-478): dismiss a pinned breaking change (or all of them), toggle the toast for a new version. */
   whatsnew: WhatsNewActions
+  /** ADR-480: the ADRs page: filter, select, initialise, propose, change a status, attach to a mission, check scope. */
+  adrs: AdrActions
   /** Opens or closes a collapsible section (`<view>/<id>`). */
   toggle: (key: string) => void
   /** The Workflows page: cursor keys, the inspector's tab, the confirm-gated ruflo agent verbs, and naming a transcript's path. */
