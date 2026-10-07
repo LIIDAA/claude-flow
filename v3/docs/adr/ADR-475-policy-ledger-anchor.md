@@ -23,7 +23,7 @@ So an attacker who truncated receipts and also deleted the two anchor fields got
    state against the primary anchor, the newest log entry and the mirror. The mirror must appear in the log (an older copy of the log is a rollback).
    The log is written after `state.json`, so a crash leaves the state ahead of the log; that is caught up, never read as truncation.
 3. **Explicit repair.** `ruflo policy verify --establish-anchor` (interactive terminal only, not exposed over MCP) anchors a ledger
-   that has receipts and no usable anchor, and records `event: establish-anchor`, the OS user and the time in the log. It cannot override a
+   that has receipts and no usable anchor (a corrupt log or mirror is rebuilt; a readable one must still agree with the chain), and records `event: establish-anchor`, the OS user and the time in the log. It cannot override a
    truncation or mismatch that the remaining anchors still prove.
 4. **Migration.** A state.json anchor from an older version is accepted; the second anchor is then written (`migrated-from-state`).
    A ledger with no anchor at all (pre-#3568) gets `anchor-missing` and the one-step repair above, not a crash. A deleted primary with an
@@ -40,8 +40,11 @@ No local, unkeyed scheme defends against full local write access; stronger evide
 `CLAUDE_FLOW_POLICY_SIGNING_KEY`, or shipping the head hash off-host). A truncation back to a point where a *previous* anchor
 entry exists while that entry and everything after it is also removed from log and mirror is likewise undetectable. The mirror is best-effort (a read-only home logs a warning and continues).
 
+In `enforce` mode `state.json` was already HMAC-authenticated through `state.anchor.json` in the home directory, so the #3602 repro only bit in `legacy` and `observe`, where no HMAC exists; the second anchor extends the same kind of coverage to those modes.
+
 ## 4. Consequences
 
+- A pre-#3568 ledger (receipts, no anchor of any kind) makes every policy transaction fail with `policy-ledger-anchor-missing: ... run ruflo policy verify --establish-anchor` until an operator repairs it; `authorizeMcpTool` rethrows, so MCP calls fail with that text (CLI startup migration swallows it). A truncation already failed the same way (`policy-ledger-truncated`).
 - `verifyPolicyLedger` gains `{ establishAnchor }` and results may carry `secondaryAnchor`. `LedgerVerification.anchor` is only set by an explicit establish.
 - `AgenticPolicyEngine.verifyLedger({ establishAnchor })` is the only engine path that anchors existing receipts.
 - Touches `@claude-flow/security` (bundled) and `@claude-flow/cli`.
