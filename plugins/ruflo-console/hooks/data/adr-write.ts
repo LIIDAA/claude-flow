@@ -263,7 +263,7 @@ export function draftFromMission(mission: { objective: string; tasks: readonly {
     title: titleText(mission.objective).slice(0, 100),
     status: 'proposed',
     scope: [...scope],
-    context: `A mission set out to: ${plain(mission.objective, 300)}`,
+    context: `A mission set out to: ${plain(mission.objective, 2_000)}`,
     decision: `Draft, written from the mission's record and to be rewritten by a person: the mission did the following.\n\n${done.join('\n')}\n\nWhat was decided, and why, is not in the record: say it here.`,
   }
 }

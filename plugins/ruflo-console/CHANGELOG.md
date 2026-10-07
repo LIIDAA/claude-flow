@@ -2,6 +2,12 @@
 
 Newest first. One `## <version> — <date>` heading per version, then `feat:`, `fix:`, `breaking:` and `chore:` bullets (ADR-478). Built from git history; older versions: `git log -- plugins/ruflo-console`.
 
+## 0.39.1 — 2026-10-07
+- fix: text you type is never silently shortened (ADR-481): the mission goal (was cut at 500 characters), the question, the aside, the guide, the research question, a loop task, help and ask questions, room messages, palette text, start fields, workflow guidance and messages, templates, security and memory fields, the Gates setting and the recall prompt now keep every character; the goal, the loop prompt and the mission context carry it whole
+- fix: the one-line field no longer hides what you typed: under any field whose text passes one line, a bordered mirror shows every line (wrapped, growing to 12 lines, then the last lines with a count) with a line count; type a backslash and n for a new line, and Enter sends all of it
+- fix: a goal, objective, question or note is drawn in full (wrapped), with an explicit "+N more lines" marker past 40 lines, instead of one clipped line; the Mission Control header shows the objective in full
+- fix: over a real limit the action is refused before anything is sent, with the exact limit and the characters over (the field's own 10,000, an argument's 8,000, a ruflo mission objective's 2,000, a loop task's 4,000) and the text stays in the field; AIDefence now screens all of a long text, not its first 2,000 characters
+
 ## 0.39.0 — 2026-10-07
 - feat: ADRs page under TOOLS: find, propose, accept, reject, deprecate and supersede your own project's Architecture Decision Records, with the exact file and diff in the confirm (ADR-480)
 - feat: the page finds your project's ADR folder (docs/adr, docs/adrs, doc/adr, adr, docs/architecture/decisions, docs/decisions ...) or the one in Settings, follows the style of your existing ADRs (MADR, Nygard / adr-tools, ruflo style) and offers to initialise a project that has none

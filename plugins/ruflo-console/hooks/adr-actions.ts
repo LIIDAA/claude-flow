@@ -2,6 +2,7 @@
  * What the ADRs page and its palette entries call (ADR-480): filter, select, initialise, propose, change a status, attach, check scope.
  * Each write is a spec for the runner's confirm row; this file only wires them.
  */
+import { checkLimit } from './full-text'
 import type { ActionSpec } from './actions'
 import { adrOf, docByNumber, docOf, initSpec, loadAdrs, proposeSpec, say, statusSpec, type AdrFilter } from './adr'
 import { draftSpec, scopeCheck, setAttached } from './adr-mission'
@@ -29,6 +30,9 @@ export type AdrWired = { host: Host; actions: AdrActions }
 const wired = new WeakMap<State, AdrWired>()
 export const adrWired = (state: State): AdrWired | undefined => wired.get(state)
 
+/** The longest ADR title: the heading and file name of the record (titleText in data/adr-write.ts). */
+export const ADR_TITLE_MAX = 120
+
 const today = (): string => new Date().toISOString().slice(0, 10)
 
 export function adrActions(state: State, host: Host, runner: Runner): AdrActions {
@@ -51,7 +55,14 @@ export function adrActions(state: State, host: Host, runner: Runner): AdrActions
       host.invalidate()
     },
     init: () => ask(initSpec(state, host, today()), adr.dir === null ? 'cannot initialise' : 'this project already has an ADR folder'),
-    propose: title => ask(proposeSpec(state, host, title, today()), adr.dir === null ? reason : 'type a title for the record'),
+    propose: title => {
+      // The title is the record's heading and its file name: one line of at most ADR_TITLE_MAX characters. Longer is refused with the count, never cut (ADR-481).
+      const fit = checkLimit(title.replace(/\s+/g, ' ').trim(), ADR_TITLE_MAX, 'the title', 'it is the record’s heading and file name; put the rest in the record itself')
+
+      if (!fit.ok) return say(state, host, 'propose ADR', false, [fit.message])
+
+      ask(proposeSpec(state, host, title, today()), adr.dir === null ? reason : 'type a title for the record')
+    },
     status: (file, to) => {
       const doc = docOf(state, file)
 
