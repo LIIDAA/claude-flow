@@ -1702,7 +1702,12 @@ export class UnifiedSwarmCoordinator extends EventEmitter implements IUnifiedSwa
       if (pool && agent) {
         try {
           await pool.add(agent);
-        } catch {
+        } catch (error) {
+          // Only the pool-full condition (AgentPool.add()'s sole throw) is
+          // tolerated; anything else is a real defect and must surface.
+          if (!(error instanceof Error) || !error.message.includes('maximum capacity')) {
+            throw error;
+          }
           this.emitEvent('agent.domain_pool_full', { agentId, domain });
         }
       }

@@ -119,6 +119,19 @@ describe('spawnAgent() auto-domain branch — domain pool visibility', () => {
     expect(poolFullEvent).toBeDefined();
   });
 
+  it('surfaces a non-capacity pool.add() failure instead of swallowing it', async () => {
+    const pool = coordinator.getDomainPool('queen');
+    expect(pool).toBeDefined();
+    const original = pool!.add.bind(pool);
+    pool!.add = async () => {
+      throw new Error('unexpected pool corruption');
+    };
+
+    await expect(coordinator.spawnAgent({ type: 'queen' })).rejects.toThrow('unexpected pool corruption');
+
+    pool!.add = original;
+  });
+
   it('still works correctly via the domain-aware branches (regression guard)', async () => {
     // registerAgentWithDomain()'s own pool.add() call path must be
     // unaffected by this fix.
