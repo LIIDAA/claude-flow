@@ -292,7 +292,17 @@ export function createToaster(deps: ToasterDeps): Toaster {
   }
 
   /** A clock that fails (a refused `clock.now`) is the wall clock: the toast is still decided. */
-  const atNow = <T>(then: (now: number) => Maybe<T>, fallback: () => T): Maybe<T> => chain(deps.now(), then, () => chain(Date.now(), then, fallback))
+  const atNow = <T>(then: (now: number) => Maybe<T>, fallback: () => T): Maybe<T> => {
+    let clock: Maybe<number>
+
+    try {
+      clock = deps.now()
+    } catch {
+      clock = Date.now()
+    }
+
+    return chain(clock, then, () => chain(Date.now(), then, fallback))
+  }
 
   const releaseNow = (): Maybe<void> => atNow(now => withPrefs(prefs => releaseAt(now, prefs)), () => undefined)
 

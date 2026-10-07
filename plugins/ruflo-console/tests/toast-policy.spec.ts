@@ -214,13 +214,15 @@ describe('the toaster', () => {
     const b = createToaster({ source: 'mods', now: () => 1, show: l => void drawn.push(l), persist: () => Promise.reject(new Error('disk')) })
     const c = createToaster({ source: 'mods', now: () => Promise.reject(new Error('clock')), show: l => void drawn.push(l) })
     const d = createToaster({ source: 'mods', now: () => 1, show: l => void drawn.push(l), prefs: () => { throw new Error('prefs') } })
+    const e = createToaster({ source: 'mods', now: () => { throw new Error('no clock on this engine') }, show: l => void drawn.push(l) })
 
     expect(a.toast({ text: 'a' })).toBe('shown')
     expect(b.toast({ text: 'b' })).toBe('shown')
     expect(await c.toast({ text: 'c' })).toBe('shown')
     expect(d.toast({ text: 'd' })).toBe('shown')
+    expect(e.toast({ text: 'e' })).toBe('shown')
     await Promise.resolve()
-    expect(drawn).toEqual(['› a', '› b', '› c', '› d'])
+    expect(drawn).toEqual(['› a', '› b', '› c', '› d', '› e'])
   })
 
   it('empty text draws and records nothing', () => {
