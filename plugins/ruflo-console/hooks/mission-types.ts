@@ -21,6 +21,8 @@ export type MissionRecord = {
   createdAtMs: number
   /** The mission's loop manager state (ADR-443), validated by parseLoop where it is read. */
   loop?: unknown
+  /** ADR-480: the file names of the project's ADRs attached to this mission (validated where read). */
+  adrs?: string[]
 }
 export type McTab = 'plan' | 'tasks' | 'agents' | 'evidence' | 'record' | 'loop'
 export type Derived = 'done' | 'running' | 'ready' | 'waiting' | 'failed' | 'cancelled'

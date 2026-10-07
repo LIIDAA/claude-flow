@@ -233,6 +233,20 @@ export const MORE_TOPICS: readonly HelpTopic[] = [
     keywords: ['version', 'upgrade', 'newer', 'auto-update'],
   },
   {
+    id: 'adrs',
+    title: 'Your project’s ADRs',
+    group: 'Console',
+    summary: 'find, propose and change the decisions your project wrote down',
+    steps: [
+      { text: 'Open ADRs (TOOLS group, or /ruflo adrs). The console finds your project’s ADR folder (docs/adr, docs/adrs, doc/adr, adr, docs/architecture/decisions, docs/decisions ...) or the one named in Settings.', go: { view: 'adrs' } },
+      { text: 'No folder yet? “initialise ADRs here” asks first, then creates the folder and a first record. Nothing is ever overwritten.' },
+      { text: 'Propose a record: type a title. It takes the next number and the style your other ADRs use (MADR, Nygard / adr-tools, or ruflo style). Accept, reject, deprecate or supersede it from its detail; each shows the exact lines it changes.' },
+      { text: 'In Missions, attach ADRs to a mission: Claude and the swarm agents are told the accepted decisions, and the gates compare changed files with the paths those ADRs name. That check compares paths only; it does not prove a change follows a decision.' },
+    ],
+    related: ['mission', 'settings'],
+    keywords: ['adr', 'architecture', 'decision', 'record', 'madr', 'nygard', 'supersede'],
+  },
+  {
     id: 'whatsnew',
     title: 'What’s new in your plugins',
     group: 'Console',

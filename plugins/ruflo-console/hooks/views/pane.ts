@@ -27,6 +27,7 @@ import { evolveResult, evolveView } from './evolve'
 import { catalogView } from './plugin-catalog'
 import { settingsView } from './settings'
 import { whatsnewView } from './whatsnew'
+import { adrsView } from './adr'
 import { devtoolsResult, devtoolsView } from './devtools'
 import { sandboxView } from './sandbox'
 import { federationView } from './federation'
@@ -57,7 +58,6 @@ import { vectorResult, vectorView } from './vector'
 import { xruvView } from './xruv'
 
 export const NARROW = 44
-
 /** The keyless views that keep a tab of their own (the rest are reached from the main menu). */
 const CORE_TABS = new Set<ViewId>(['hive', 'skills', 'cost', 'timeline', 'approvals', 'events', 'room', 'xruv', 'terminal'])
 
@@ -97,7 +97,7 @@ const BODIES: Record<ViewId, (ctx: Ctx) => RenderElement> = {
   sandbox: sandboxView,
   market: catalogView,
   settings: settingsView,
-  whatsnew: whatsnewView,
+  whatsnew: whatsnewView, adrs: adrsView,
   agent: agentView,
 }
 

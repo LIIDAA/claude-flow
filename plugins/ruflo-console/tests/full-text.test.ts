@@ -68,6 +68,20 @@ describe('a goal is never cut (ADR-481)', () => {
     })
   }
 
+  for (const look of ['plain', 'bbs'] as const) {
+    test(`both looks: a 1500-character goal and a 5-line draft are drawn whole in the ${look} look at 60 columns`, { options: { boot: false, look } }, async ($, on) => {
+      const { pane } = await opened($, on, 'missions', 60)
+      const goal = words(1500)
+      const five = ['one', 'two', 'three', 'four', 'five'].map(word => `${word} line of the goal`).join('\\n')
+
+      await pane.input({ key: 'mc-goal', text: five, kind: 'change' })
+      for (const word of ['one', 'two', 'three', 'four', 'five']) expect(textOf(await pane.drawn())).toContain(`${word} line of the goal`)
+      await pane.input({ key: 'mc-goal', text: goal, kind: 'submit' })
+      expect(squeezed(textOf(await pane.drawn()))).toContain(squeezed(goal))
+      await pane.unmount()
+    })
+  }
+
   test('a 9,500-character goal is stored whole; the block ends in a marker that counts the hidden lines', { options: { boot: false } }, async ($, on) => {
     const { pane } = await opened($, on)
     const goal = words(9_500)

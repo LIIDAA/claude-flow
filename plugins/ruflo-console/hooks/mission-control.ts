@@ -120,7 +120,7 @@ export const progressOf = (mission: MissionRecord, tasks: readonly TaskRecord[])
 export const failedOf = (mission: MissionRecord, tasks: readonly TaskRecord[]): number => [...derive(mission, tasks).values()].filter(value => value === 'failed').length
 
 /** The instruction handed to the primary session for one task: what, as whom, what it must show, and how to record it. */
-export function instructionOf(mission: MissionRecord, task: LedgerTask): string {
+export function instructionOf(mission: MissionRecord, task: LedgerTask, adrBlock = ''): string {
   const criteria = mission.acceptance.slice(0, 8).map(criterion => `- ${criterion.check}`).join('\n')
   const deps = task.dependsOn.length === 0 ? 'none' : task.dependsOn.map(id => `${id} (${mission.tasks.find(candidate => candidate.id === id)?.title ?? ''})`).join(', ')
 
@@ -130,6 +130,7 @@ export function instructionOf(mission: MissionRecord, task: LedgerTask): string 
     `Act as: ${task.agent}. It is done when: ${task.requirement}`,
     `Already done: ${deps}.`,
     `The mission's acceptance criteria, for context:\n${criteria}`,
+    ...(adrBlock === '' ? [] : [adrBlock]),
     `When this task is finished, record it: call the ruflo MCP tool task_complete with taskId "${task.rufloTaskId ?? ''}" and a result object {summary, evidence} (evidence = files changed, commands run, test output). If you cannot finish it, call task_update with the same taskId, status "failed" and a result {reason}. Do not complete it unless "it is done when" is true. Keep this transcript to decisions and verified results.`,
   ].join('\n')
 }
@@ -160,7 +161,7 @@ export async function loadLedger(state: State, host: Host): Promise<void> {
     const isShaped = Array.isArray(m?.tasks) && m.tasks.every(task => typeof task?.id === 'string' && Array.isArray(task.dependsOn)) && Array.isArray(m.events)
 
     // Auto-run never survives a restart: a new session starts by asking.
-    if (typeof m?.id === 'string' && /^msn_[a-f0-9]{24}$/.test(m.id) && isShaped) mc.missions.set(m.id, { ...m, auto: false })
+    if (typeof m?.id === 'string' && /^msn_[a-f0-9]{24}$/.test(m.id) && isShaped) mc.missions.set(m.id, { ...m, auto: false, ...(Array.isArray(m.adrs) && { adrs: m.adrs.filter(file => typeof file === 'string' && /^[A-Za-z0-9][A-Za-z0-9._ -]{0,119}\.md$/.test(file)).slice(0, 8) }) })
   }
 
   const active = (saved as { active?: unknown }).active

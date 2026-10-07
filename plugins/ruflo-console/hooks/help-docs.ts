@@ -68,6 +68,7 @@ export const VIEW_TOPIC: Partial<Record<ViewId, string>> = {
   sandbox: 'sandbox',
   settings: 'settings',
   whatsnew: 'whatsnew',
+  adrs: 'adrs',
   timeline: 'watch',
   events: 'watch',
   room: 'room',
