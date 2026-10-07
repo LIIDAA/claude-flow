@@ -24,13 +24,19 @@ describe('wrapFull', () => {
     }
   })
 
+  it('breaks a word that is only a little longer than the line, so no line is wider than asked', () => {
+    for (const extra of [1, 2, 3, 5]) expect(Math.max(...wrapFull(`x ${'y'.repeat(20 + extra)} z`, 20).map(line => countOf(line)))).toBeLessThanOrEqual(20)
+  })
+
   it('keeps the person’s own line breaks', () => {
     expect(wrapFull('one\ntwo\r\nthree', 40)).toEqual(['one', 'two', 'three'])
     expect(wrapFull('a\n\nb', 40)).toEqual(['a', '', 'b'])
   })
 
   it('never splits a surrogate pair', () => {
-    for (const line of wrapFull('😀'.repeat(50), 9)) expect(line).toBe(Array.from(line).join(''))
+    const lone = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/
+
+    for (const line of wrapFull('😀'.repeat(50), 9)) expect(lone.test(line)).toBe(false)
     expect(wrapFull('😀'.repeat(50), 9).join('')).toBe('😀'.repeat(50))
   })
 })
