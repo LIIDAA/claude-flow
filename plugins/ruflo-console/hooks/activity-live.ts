@@ -19,6 +19,8 @@ import { levelOf } from './data/event-severity'
 import type { Host } from './host'
 import { addNotice } from './notices'
 import type { State } from './state'
+import { eventOf, newSeen, pullToasts, type ToastSeen } from './toasts'
+import type { Digest } from './toast-policy'
 
 export const TICK_MS = 1_500
 export const FLUSH_MS = 4_000
@@ -48,6 +50,9 @@ export type Activity = {
   lastFlushMs: number
   isLoading: boolean
   ruleHits: number
+  /** What was taken in of the other plugins' toast digests (ADR-477), and the ones read but not yet turned into events. */
+  toast: ToastSeen
+  toastIn: Digest[]
 }
 
 const held = new WeakMap<State, Activity>()
@@ -56,7 +61,7 @@ export function activityOf(state: State): Activity {
   let found = held.get(state)
 
   if (found === undefined) {
-    found = { log: [], seqBase: 0, version: 0, lanes: newLaneStore(), prefs: emptyPrefs(), prefsProblem: null, isPrefsForeign: false, isPrefsDirty: false, prefsWriteMs: 0, memo: newMemo(), cursor: null, loaded: { isLoaded: false, events: 0, eventsBytes: 0, lanesBytes: 0, bad: 0, newer: 0, problem: null }, session: Math.random().toString(36).slice(2, 8), fresh: [], lastFlushMs: 0, isLoading: false, ruleHits: 0 }
+    found = { log: [], seqBase: 0, version: 0, lanes: newLaneStore(), prefs: emptyPrefs(), prefsProblem: null, isPrefsForeign: false, isPrefsDirty: false, prefsWriteMs: 0, memo: newMemo(), cursor: null, loaded: { isLoaded: false, events: 0, eventsBytes: 0, lanesBytes: 0, bad: 0, newer: 0, problem: null }, session: Math.random().toString(36).slice(2, 8), fresh: [], lastFlushMs: 0, isLoading: false, ruleHits: 0, toast: newSeen(Date.now()), toastIn: [] }
     held.set(state, found)
   }
 
@@ -199,6 +204,8 @@ export function gather(state: State, act: Activity, nowMs: number): ConsoleEvent
   out.push(...noticeEvents(act.memo, state.notices, state.noticeSeq))
   out.push(...denyEvents(act.memo, state.denied))
   out.push(...modEvents(act.memo, state.mods, nowMs))
+  // Every toast, drawn or not (ADR-477): the console's own, and what the other plugins left under .claude-flow/console/toasts/.
+  out.push(...state.toastLog.splice(0).map(eventOf), ...act.toastIn.splice(0).map(eventOf))
 
   return out.sort((a, b) => a.atMs - b.atMs)
 }
@@ -215,6 +222,7 @@ export async function tick(state: State, host: Host, nowMs: number = Date.now())
     }
 
     takeRing(state, act)
+    act.toastIn.push(...(await pullToasts(host, state.cwd, act.toast)))
 
     const derived = gather(state, act, nowMs)
     const rows = feedLanes(state, act, nowMs)

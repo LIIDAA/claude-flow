@@ -39,11 +39,8 @@ export function registerCost(on: On, state: ModState, options: ModOptions) {
     state.budget = { level, usd, limit }
     if (isRaised(state.rollup.rung, level)) state.rollup.rung = level // the session rollup keeps the highest rung reached
     if (raised) {
-      try {
-        $.ui.toast(`ruflo budget ${level}: $${usd.toFixed(2)} of $${limit.toFixed(2)} this session`)
-      } catch {
-        // a refused toast never fails the hook
-      }
+      // INFO and WARNING are heads-up; CRITICAL and HARD_STOP are errors, which the toast policy never drops (ADR-477).
+      await state.say({ level: level === 'INFO' ? 'info' : level === 'WARNING' ? 'warn' : 'error', text: `ruflo budget ${level}: $${usd.toFixed(2)} of $${limit.toFixed(2)} this session`, timeoutMs: 8000 })
       redraw(state)
     }
     return result

@@ -113,6 +113,9 @@ export const progressOf = (mission: MissionRecord, tasks: readonly TaskRecord[])
   return { done: [...status.values()].filter(value => value === 'done').length, total: mission.tasks.length }
 }
 
+/** How many of the mission's tasks the ruflo task store shows as failed. */
+export const failedOf = (mission: MissionRecord, tasks: readonly TaskRecord[]): number => [...derive(mission, tasks).values()].filter(value => value === 'failed').length
+
 /** The instruction handed to the primary session for one task: what, as whom, what it must show, and how to record it. */
 export function instructionOf(mission: MissionRecord, task: LedgerTask): string {
   const criteria = mission.acceptance.slice(0, 8).map(criterion => `- ${criterion.check}`).join('\n')
