@@ -260,6 +260,75 @@ async function checkStaleSettingsNpx(): Promise<HealthCheck> {
   };
 }
 
+/**
+ * #3565: report signed critical helpers whose on-disk content no longer
+ * matches the signed manifest. CLI startup heals such files, so this matters
+ * for the paths startup does not heal: `.LOCKED` or `RUFLO_HELPERS_LOCKED`
+ * (auto-restore skipped by design), an unverifiable package manifest, and an
+ * unresolvable package source.
+ */
+export async function checkHelperIntegrity(opts: {
+  cwd?: string;
+  homeDir?: string;
+  sourceDirOverride?: string | null;
+  pubkeyPemOverride?: string;
+} = {}): Promise<HealthCheck> {
+  const name = 'Helper Integrity (#3565)';
+  const { verifyInstalledCriticalHelpers } = await import('../init/helper-integrity.js');
+  const { CRITICAL_HELPERS, findPackageHelpersDir } = await import('../init/helper-refresh.js');
+  const envLocked = /^(1|true|on|yes)$/i.test(String(process.env.RUFLO_HELPERS_LOCKED || ''));
+  const home = opts.homeDir ?? process.env.HOME ?? '';
+  const dirs = [
+    join(opts.cwd ?? process.cwd(), '.claude', 'helpers'),
+    ...(home ? [join(home, '.claude', 'helpers')] : []),
+  ].filter((d, i, a) => a.indexOf(d) === i && existsSync(join(d, 'hook-handler.cjs')));
+  if (dirs.length === 0) {
+    return { name, status: 'pass', message: 'no installed ruflo helpers to verify' };
+  }
+
+  const source = opts.sourceDirOverride === undefined ? findPackageHelpersDir() : opts.sourceDirOverride;
+  if (!source) {
+    return {
+      name, status: 'warn',
+      message: 'cannot verify installed helpers: the package helper source was not found',
+      fix: 'Reinstall @claude-flow/cli',
+    };
+  }
+
+  const tamperedLines: string[] = [];
+  const lockedLines: string[] = [];
+  for (const dir of dirs) {
+    const r = verifyInstalledCriticalHelpers(dir, source, CRITICAL_HELPERS, opts.pubkeyPemOverride);
+    if (r.blocked) {
+      return {
+        name, status: 'fail',
+        message: `cannot verify installed helpers: ${r.blocked}`,
+        fix: 'Reinstall @claude-flow/cli from a trusted source',
+      };
+    }
+    if (r.tampered.length === 0) continue;
+    const line = `${dir}: ${r.tampered.join(', ')}`;
+    if (envLocked || existsSync(join(dir, '.LOCKED'))) lockedLines.push(line);
+    else tamperedLines.push(line);
+  }
+
+  if (tamperedLines.length > 0) {
+    return {
+      name, status: 'fail',
+      message: `critical helpers do not match the signed manifest — ${tamperedLines.join('; ')}`,
+      fix: 'Run any ruflo command to restore verified copies (startup heals them), or `npx ruflo init --force`; then find out what modified them',
+    };
+  }
+  if (lockedLines.length > 0) {
+    return {
+      name, status: 'warn',
+      message: `locally modified helpers (auto-restore disabled by .LOCKED / RUFLO_HELPERS_LOCKED) — ${lockedLines.join('; ')}`,
+      fix: 'Expected if you edit helpers deliberately; otherwise remove .LOCKED and run any ruflo command to restore them',
+    };
+  }
+  return { name, status: 'pass', message: `${dirs.length} helper dir(s) match the signed manifest` };
+}
+
 async function checkDaemonStatus(): Promise<HealthCheck> {
   try {
     const pidFile = '.claude-flow/daemon.pid';
@@ -668,8 +737,20 @@ async function checkNativeAgentDbStructuralIntegrity(dbPath: string): Promise<He
 // memory init creates its schema with sql.js even when native is available.
 // This probe does not verify schema compatibility or cross-process writes;
 // integrity checks and memory store's persistWarning retain their own roles.
+//
+// #3552: `loadBetterSqlite3` is injected as a parameter (default: the real
+// dynamic import) so tests can supply a fake driver directly instead of
+// racing `vi.doMock` against this function's own `import('better-sqlite3')`
+// call, which was reliable in isolation but flaky under the full suite.
+export type MemoryPersistenceDriverDeps = {
+  loadBetterSqlite3?: () => Promise<{ default: any }>;
+};
 
-export async function checkMemoryPersistenceDriver(): Promise<HealthCheck> {
+export async function checkMemoryPersistenceDriver(
+  deps: MemoryPersistenceDriverDeps = {},
+): Promise<HealthCheck> {
+  const loadBetterSqlite3 = deps.loadBetterSqlite3
+    ?? (() => import('better-sqlite3') as Promise<{ default: any }>);
   const NAME = 'Memory Persistence Driver';
   const dbPath = await resolveMemoryDbPath();
   if (!dbPath) {
@@ -690,7 +771,7 @@ export async function checkMemoryPersistenceDriver(): Promise<HealthCheck> {
 
   let Database: any;
   try {
-    Database = ((await import('better-sqlite3')) as any).default;
+    Database = ((await loadBetterSqlite3()) as any).default;
   } catch {
     Database = null;
   }
@@ -2294,6 +2375,27 @@ async function checkMetaharness(): Promise<HealthCheck> {
   }
 }
 
+// ADR-404 — ruflo as a Claude Code mod (function hooks, early access). One
+// line in a bare `doctor`: whether the mod is enabled, can load (function
+// hooks on, not refused by allowManagedModsOnly) and has started. Only an
+// opted-in project whose plugin Claude Code cannot resolve (stale ruflo
+// marketplace clone, nothing installed) fails: the classic hooks still run,
+// but the opt-in silently does nothing. `ruflo mods doctor` prints every finding.
+async function checkMods(): Promise<HealthCheck> {
+  const { probeMods } = await import('../mods/probe.js');
+  const findings = probeMods({ projectRoot: process.cwd() });
+  const enabled = findings.find((f) => f.name === 'ruflo-mods plugin')?.status === 'pass';
+  if (!enabled) return { name: 'ruflo mods (ADR-404)', status: 'pass', message: 'not enabled; classic hooks handle every event' };
+  const failures = findings.filter((f) => f.status === 'fail');
+  if (failures.length > 0) {
+    return { name: 'ruflo mods (ADR-404)', status: 'fail', message: failures.map((f) => `${f.name}: ${f.message}`).join('; '), fix: failures[0]!.fix ?? 'ruflo mods doctor' };
+  }
+  const warnings = findings.filter((f) => f.status !== 'pass');
+  return warnings.length === 0
+    ? { name: 'ruflo mods (ADR-404)', status: 'pass', message: findings.find((f) => f.name === 'last mod start')?.message ?? 'enabled' }
+    : { name: 'ruflo mods (ADR-404)', status: 'warn', message: warnings.map((f) => `${f.name}: ${f.message}`).join('; '), fix: 'ruflo mods doctor' };
+}
+
 // Opt-in @ruvector/typesafe task router (optional peer). `--component typesafe` only.
 async function checkTypesafeRouter(): Promise<HealthCheck> {
   const name = '@ruvector/typesafe router';
@@ -2503,7 +2605,7 @@ export const doctorCommand: Command = {
     {
       name: 'component',
       short: 'c',
-      description: 'Check specific component (version, node, npm, config, daemon, memory, api, git, mcp, mcp-overhead, claude, browser, disk, typescript, agentic-flow, encryption, federation, funnel, proxy, auth, typesafe, metaharness)',
+      description: 'Check specific component (version, node, npm, config, daemon, memory, api, git, mcp, mcp-overhead, claude, browser, disk, typescript, agentic-flow, encryption, federation, funnel, proxy, auth, typesafe, mods, metaharness)',
       type: 'string'
     },
     {
@@ -2631,6 +2733,7 @@ export const doctorCommand: Command = {
       checkGitRepo,
       checkConfigFile,
       checkStaleSettingsNpx, // #2448/#2677 — runaway `npx @latest` in settings
+      () => checkHelperIntegrity(), // #3565 — installed signed helpers vs manifest
       checkDaemonStatus,
       checkMemoryDatabase,
       checkMemoryStructuralIntegrity, // #2737 — bounded, native quick_check on every default run
@@ -2653,6 +2756,7 @@ export const doctorCommand: Command = {
       checkFunnel, // ADR-305 — effective funnel state + deciding precedence source
       checkProxySponsoredConsent, // ADR-313 — Meta LLM Proxy sponsored-downtime health
       checkAuth, // ADR-306 — Cognitum identity (warn-only; never fails bare `ruflo doctor`)
+      checkMods, // ADR-404 — Claude Code mod path (warn-only)
     ];
 
     // #2677: `--component memory` now runs the whole memory-health suite,
@@ -2672,6 +2776,7 @@ export const doctorCommand: Command = {
       'browser': checkAgentBrowserVersion,
       'config': checkConfigFile,
       'stale-settings': checkStaleSettingsNpx, // #2448
+      'helpers': () => checkHelperIntegrity(), // #3565
       'daemon': checkDaemonStatus,
       'memory': [
         checkMemoryDatabase,         // existing: exists + statable (unchanged)
@@ -2706,6 +2811,7 @@ export const doctorCommand: Command = {
       'proxy': [checkProxySponsoredConsent, checkProxyBinary, checkProxyProcess, checkProxyBindAddress],
       'auth': checkAuth, // ADR-306
       'typesafe': checkTypesafeRouter, // opt-in @ruvector/typesafe task router
+      'mods': checkMods, // ADR-404 — ruflo as a Claude Code mod
     };
 
     let checksToRun = allChecks;

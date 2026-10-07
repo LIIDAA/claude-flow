@@ -14,6 +14,19 @@ export const VERSION = JSON.parse(readFileSync(new URL('../package.json', import
 const TEAM_BOARD_URI = 'ui://ruflo-ai-team/board-v4.html';
 const TEAM_BOARD_HTML = readFileSync(new URL('../ui/team-board.html', import.meta.url), 'utf8');
 const MAX_BODY = 512 * 1024;
+// Browser origins allowed to read responses cross-origin. ChatGPT and Claude
+// call the MCP endpoint server-side and the board UI makes no network requests,
+// so this only governs browser-based MCP clients. ALLOWED_ORIGINS (comma
+// separated) replaces the default list.
+export const DEFAULT_ALLOWED_ORIGINS = Object.freeze(['https://chatgpt.com', 'https://chat.openai.com', 'https://claude.ai']);
+export function parseAllowedOrigins(value) {
+  const list = value == null || String(value).trim() === '' ? DEFAULT_ALLOWED_ORIGINS : String(value).split(',');
+  const origins = new Set();
+  for (const raw of list) {
+    try { const u = new URL(String(raw).trim()); if (u.protocol === 'https:' || u.hostname === 'localhost' || u.hostname === '127.0.0.1') origins.add(u.origin); } catch { /* ignore malformed entries */ }
+  }
+  return origins;
+}
 const TOOL_SCOPES = Object.freeze({
   team_templates_list: SCOPES.read, team_list: SCOPES.read, team_get: SCOPES.read, team_board: SCOPES.read,
   task_list: SCOPES.read, memory_search: SCOPES.read, evidence_export: SCOPES.read,
@@ -32,7 +45,8 @@ async function readBody(req) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-export async function createAiTeamService({ store, vectorMemory, verifyToken, port } = {}) {
+export async function createAiTeamService({ store, vectorMemory, verifyToken, port, allowedOrigins: allowedOriginsOption } = {}) {
+  const allowedOrigins = allowedOriginsOption ? parseAllowedOrigins(allowedOriginsOption.join(',')) : parseAllowedOrigins(process.env.ALLOWED_ORIGINS);
   store ||= await storeFromEnv();
   vectorMemory ||= await vectorMemoryFromEnv(store);
   const publicUrl = (process.env.RUFLO_AI_TEAM_PUBLIC_URL || 'https://team.ruv.io').replace(/\/$/, '');
@@ -110,7 +124,9 @@ export async function createAiTeamService({ store, vectorMemory, verifyToken, po
 
   const server = createServer(async (req,res) => {
     res.setHeader('x-content-type-options','nosniff'); res.setHeader('referrer-policy','no-referrer'); res.setHeader('content-security-policy',"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'");
-    res.setHeader('access-control-allow-origin','*'); res.setHeader('access-control-expose-headers','www-authenticate,mcp-session-id,mcp-protocol-version');
+    res.setHeader('vary','Origin');
+    const origin=req.headers.origin;
+    if(origin&&allowedOrigins.has(origin)){res.setHeader('access-control-allow-origin',origin);res.setHeader('access-control-expose-headers','www-authenticate,mcp-session-id,mcp-protocol-version');}
     const url=new URL(req.url,`http://${req.headers.host||'localhost'}`);
     if(req.method==='OPTIONS'){res.setHeader('access-control-allow-methods','GET,POST,OPTIONS');res.setHeader('access-control-allow-headers','content-type,authorization,mcp-session-id,mcp-protocol-version,accept');return res.writeHead(204).end();}
     if(url.pathname==='/health')return res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({ok:true,service:'ruflo-ai-team',version:VERSION}));

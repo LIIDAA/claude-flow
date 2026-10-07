@@ -150,3 +150,65 @@ test('prompt-injection memory is rejected before indexing', async (t) => {
   const search=value(await call(f.base,'memory_search',{teamId:team.id,query:'system prompt',limit:10},'alpha:all'));
   assert.doesNotMatch(search.data,/Ignore previous instructions/);
 });
+
+// #3556: discovery stays public on purpose, but cross-origin reads are limited
+// to an explicit allowlist instead of `access-control-allow-origin: *`.
+const post=(base,body,{origin,token}={})=>fetch(`${base}/mcp`,{method:'POST',headers:{'content-type':'application/json','accept':'application/json, text/event-stream',...(origin?{origin}:{}),...(token?{authorization:`Bearer ${token}`}:{})},body:JSON.stringify(body)});
+const listBody={jsonrpc:'2.0',id:1,method:'tools/list',params:{}};
+
+test('an allowlisted origin gets ACAO equal to that origin, never a wildcard', async (t) => {
+  const f=await fixture(); t.after(()=>f.server.close());
+  for(const origin of ['https://chatgpt.com','https://chat.openai.com','https://claude.ai']){
+    const r=await post(f.base,listBody,{origin});
+    assert.equal(r.status,200);
+    assert.equal(r.headers.get('access-control-allow-origin'),origin);
+    assert.match(r.headers.get('vary')||'',/Origin/);
+    const pre=await fetch(`${f.base}/mcp`,{method:'OPTIONS',headers:{origin,'access-control-request-method':'POST'}});
+    assert.equal(pre.status,204); assert.equal(pre.headers.get('access-control-allow-origin'),origin);
+  }
+});
+
+test('a disallowed origin gets no ACAO on discovery, preflight or 401 responses', async (t) => {
+  const f=await fixture(); t.after(()=>f.server.close());
+  const origin='https://evil.example';
+  const listed=await post(f.base,listBody,{origin});
+  assert.equal(listed.status,200); assert.equal(listed.headers.get('access-control-allow-origin'),null);
+  const pre=await fetch(`${f.base}/mcp`,{method:'OPTIONS',headers:{origin,'access-control-request-method':'POST'}});
+  assert.equal(pre.headers.get('access-control-allow-origin'),null);
+  const denied=await post(f.base,{jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'team_list',arguments:{}}},{origin});
+  assert.equal(denied.status,401); assert.equal(denied.headers.get('access-control-allow-origin'),null);
+});
+
+test('server-to-server calls without an Origin header keep working', async (t) => {
+  const f=await fixture(); t.after(()=>f.server.close());
+  const r=await post(f.base,listBody);
+  assert.equal(r.status,200); assert.equal(r.headers.get('access-control-allow-origin'),null);
+  assert.equal(JSON.parse((await r.text()).split('\n').find(x=>x.startsWith('data: ')).slice(6)).result.tools.length,14);
+});
+
+test('tools/call and resources/read still require a token even from an allowlisted origin', async (t) => {
+  const f=await fixture(); t.after(()=>f.server.close());
+  const origin='https://chatgpt.com';
+  const callR=await post(f.base,{jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'team_list',arguments:{}}},{origin});
+  assert.equal(callR.status,401); assert.match(callR.headers.get('www-authenticate'),/invalid_token/);
+  const readR=await post(f.base,{jsonrpc:'2.0',id:3,method:'resources/read',params:{uri:'ruv://team/templates'}},{origin});
+  assert.equal(readR.status,401);
+});
+
+test('ALLOWED_ORIGINS replaces the default list; malformed entries are ignored', async (t) => {
+  const store=new InMemoryStore(); const vectorMemory=new TenantVectorMemory(store);
+  const service=await createAiTeamService({store,vectorMemory,verifyToken:fakeVerify,port:0,allowedOrigins:['https://app.example.com','not a url']});
+  const port=await service.listen(0); t.after(()=>service.server.close()); const base=`http://127.0.0.1:${port}`;
+  assert.equal((await post(base,listBody,{origin:'https://app.example.com'})).headers.get('access-control-allow-origin'),'https://app.example.com');
+  assert.equal((await post(base,listBody,{origin:'https://chatgpt.com'})).headers.get('access-control-allow-origin'),null);
+});
+
+test('anonymous resources/list exposes only static resources, never tenant data', async (t) => {
+  const f=await fixture(); t.after(()=>f.server.close());
+  await call(f.base,'team_create',{name:'Secret Tenant Team',objective:'Private objective xyzzy'},'alpha:all');
+  const r=await rpc(f.base,{jsonrpc:'2.0',id:4,method:'resources/list',params:{}});
+  assert.equal(r.status,200);
+  const uris=r.body.result.resources.map(x=>x.uri).sort();
+  assert.deepEqual(uris,['ruv://team/templates','ui://ruflo-ai-team/board-v4.html']);
+  assert.doesNotMatch(JSON.stringify(r.body),/Secret Tenant Team|xyzzy/);
+});
