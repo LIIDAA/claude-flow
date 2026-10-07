@@ -2375,6 +2375,27 @@ async function checkMetaharness(): Promise<HealthCheck> {
   }
 }
 
+// ADR-404 — ruflo as a Claude Code mod (function hooks, early access). One
+// line in a bare `doctor`: whether the mod is enabled, can load (function
+// hooks on, not refused by allowManagedModsOnly) and has started. Only an
+// opted-in project whose plugin Claude Code cannot resolve (stale ruflo
+// marketplace clone, nothing installed) fails: the classic hooks still run,
+// but the opt-in silently does nothing. `ruflo mods doctor` prints every finding.
+async function checkMods(): Promise<HealthCheck> {
+  const { probeMods } = await import('../mods/probe.js');
+  const findings = probeMods({ projectRoot: process.cwd() });
+  const enabled = findings.find((f) => f.name === 'ruflo-mods plugin')?.status === 'pass';
+  if (!enabled) return { name: 'ruflo mods (ADR-404)', status: 'pass', message: 'not enabled; classic hooks handle every event' };
+  const failures = findings.filter((f) => f.status === 'fail');
+  if (failures.length > 0) {
+    return { name: 'ruflo mods (ADR-404)', status: 'fail', message: failures.map((f) => `${f.name}: ${f.message}`).join('; '), fix: failures[0]!.fix ?? 'ruflo mods doctor' };
+  }
+  const warnings = findings.filter((f) => f.status !== 'pass');
+  return warnings.length === 0
+    ? { name: 'ruflo mods (ADR-404)', status: 'pass', message: findings.find((f) => f.name === 'last mod start')?.message ?? 'enabled' }
+    : { name: 'ruflo mods (ADR-404)', status: 'warn', message: warnings.map((f) => `${f.name}: ${f.message}`).join('; '), fix: 'ruflo mods doctor' };
+}
+
 // Opt-in @ruvector/typesafe task router (optional peer). `--component typesafe` only.
 async function checkTypesafeRouter(): Promise<HealthCheck> {
   const name = '@ruvector/typesafe router';
@@ -2584,7 +2605,7 @@ export const doctorCommand: Command = {
     {
       name: 'component',
       short: 'c',
-      description: 'Check specific component (version, node, npm, config, daemon, memory, api, git, mcp, mcp-overhead, claude, browser, disk, typescript, agentic-flow, encryption, federation, funnel, proxy, auth, typesafe, metaharness)',
+      description: 'Check specific component (version, node, npm, config, daemon, memory, api, git, mcp, mcp-overhead, claude, browser, disk, typescript, agentic-flow, encryption, federation, funnel, proxy, auth, typesafe, mods, metaharness)',
       type: 'string'
     },
     {
@@ -2735,6 +2756,7 @@ export const doctorCommand: Command = {
       checkFunnel, // ADR-305 — effective funnel state + deciding precedence source
       checkProxySponsoredConsent, // ADR-313 — Meta LLM Proxy sponsored-downtime health
       checkAuth, // ADR-306 — Cognitum identity (warn-only; never fails bare `ruflo doctor`)
+      checkMods, // ADR-404 — Claude Code mod path (warn-only)
     ];
 
     // #2677: `--component memory` now runs the whole memory-health suite,
@@ -2789,6 +2811,7 @@ export const doctorCommand: Command = {
       'proxy': [checkProxySponsoredConsent, checkProxyBinary, checkProxyProcess, checkProxyBindAddress],
       'auth': checkAuth, // ADR-306
       'typesafe': checkTypesafeRouter, // opt-in @ruvector/typesafe task router
+      'mods': checkMods, // ADR-404 — ruflo as a Claude Code mod
     };
 
     let checksToRun = allChecks;
