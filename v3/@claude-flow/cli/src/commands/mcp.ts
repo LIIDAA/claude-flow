@@ -702,6 +702,7 @@ const execCommand: Command = {
       const startTime = performance.now();
       const result = await callMCPTool(tool, params, {
         sessionId: `cli-${Date.now().toString(36)}`,
+        transport: 'cli',
         requestId: `exec-${Date.now()}`,
       });
       const duration = performance.now() - startTime;

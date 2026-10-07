@@ -935,7 +935,7 @@ export class MCPServerManager extends EventEmitter {
           }
 
           try {
-            const result = await callMCPTool(toolName, toolParams, { sessionId });
+            const result = await callMCPTool(toolName, toolParams, { sessionId, transport: 'stdio' });
             const isError = hasToolError(result);
             trackRequest(toolName, !isError);
             return {
@@ -1050,7 +1050,7 @@ export class MCPServerManager extends EventEmitter {
           const result = await callMCPTool(
             tool.name,
             (input as Record<string, unknown>) || {},
-            { sessionId: context?.sessionId || fallbackSessionId }
+            { sessionId: context?.sessionId || fallbackSessionId, transport: this.options.transport === 'websocket' ? 'websocket' : 'http' }
           );
           trackRequest(tool.name, !hasToolError(result));
           return result;

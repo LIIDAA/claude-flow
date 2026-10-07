@@ -113,7 +113,7 @@ export class ConfigFileManager {
     if (this.config === null) {
       this.load(cwd);
     }
-    return this.config ?? { ...DEFAULT_CONFIG };
+    return this.config ?? structuredClone(DEFAULT_CONFIG);
   }
 
   /** Get a nested config value by dot-separated key */
@@ -149,7 +149,7 @@ export class ConfigFileManager {
     if (fs.existsSync(targetPath) && !force) {
       throw new Error(`Config file already exists: ${targetPath}. Use --force to overwrite.`);
     }
-    const config = { ...DEFAULT_CONFIG, ...overrides };
+    const config = { ...structuredClone(DEFAULT_CONFIG), ...overrides };
     this.writeAtomic(targetPath, config);
     this.selectProject(cwd);
     this.config = config;
@@ -161,8 +161,9 @@ export class ConfigFileManager {
   reset(cwd: string): string {
     this.selectProject(cwd);
     const targetPath = this.findConfig(cwd) ?? path.resolve(cwd, CONFIG_FILENAMES[0]);
-    this.writeAtomic(targetPath, DEFAULT_CONFIG);
-    this.config = { ...DEFAULT_CONFIG };
+    const config = structuredClone(DEFAULT_CONFIG);
+    this.writeAtomic(targetPath, config);
+    this.config = config;
     this.configPath = targetPath;
     return targetPath;
   }
@@ -204,7 +205,7 @@ export class ConfigFileManager {
 
   /** Get default config */
   getDefaults(): Record<string, unknown> {
-    return { ...DEFAULT_CONFIG };
+    return structuredClone(DEFAULT_CONFIG);
   }
 
   /** Cached values and file paths belong to one resolved project directory. */
