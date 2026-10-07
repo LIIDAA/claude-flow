@@ -10,6 +10,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { RUFLO_FILES } from './fixtures/ruflo-run'
 import { command, elementsOf, keyOf, paneAt, PLUGIN, SESSION, textOf as rawText, worldOf } from './fixtures/world'
+import { CONSOLE_VERSION } from '../hooks/version'
 
 /** The BBS look draws headers in capitals, so the page's words are compared in lower case. */
 const textOf = (tree: Parameters<typeof rawText>[0]) => rawText(tree).toLowerCase()
@@ -37,7 +38,7 @@ async function start($: Body[0], on: Body[1], options: { swarm?: string; notes?:
   })
   const clock = mock.clock(on)
 
-  if (options.seen !== null) world.stored.set('whatsnew', JSON.stringify({ v: 1, seen: options.seen ?? { 'ruflo-swarm': '0.4.0', 'ruflo-core': '0.2.6', 'ruflo-console': '0.38.0' }, toasted: options.toasted ?? { 'ruflo-swarm': '0.5.0', 'ruflo-core': '0.2.6', 'ruflo-console': '0.38.0' }, pinned: [], dismissed: [], toast: true }))
+  if (options.seen !== null) world.stored.set('whatsnew', JSON.stringify({ v: 1, seen: options.seen ?? { 'ruflo-swarm': '0.4.0', 'ruflo-core': '0.2.6', 'ruflo-console': CONSOLE_VERSION }, toasted: options.toasted ?? { 'ruflo-swarm': '0.5.0', 'ruflo-core': '0.2.6', 'ruflo-console': CONSOLE_VERSION }, pinned: [], dismissed: [], toast: true }))
 
   let fetches = 0
 
@@ -114,7 +115,7 @@ describe('What’s new, end to end', () => {
   })
 
   test('one info toast when a new version is found, none for the same version again, and none when the switch is off', { options: { boot: false } }, async ($, on) => {
-    const { world, clock } = await start($, on, { toasted: { 'ruflo-swarm': '0.4.0', 'ruflo-core': '0.2.6', 'ruflo-console': '0.38.0' } })
+    const { world, clock } = await start($, on, { toasted: { 'ruflo-swarm': '0.4.0', 'ruflo-core': '0.2.6', 'ruflo-console': CONSOLE_VERSION } })
 
     const pane = await mounted($, 'overview')
 

@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 
 import { adrOf, loadAdrs } from '../hooks/adr'
-import { adrBlockFor, attachedOf, DIGEST_FILE, draftSpec, mirrorDigest, scopeCheck, setAttached, suggestFor } from '../hooks/adr-mission'
+import { adrBlockFor, attachedOf, DIGEST_FILE, draftSpec, mirrorDigest, scopeCheck, setAttached, suggestFor, syncAdrDigest } from '../hooks/adr-mission'
 import { contextSection, claudeActions } from '../hooks/mission-claude'
 import { missionContextText } from '../hooks/mission-context'
 import { instructionOf, loadLedger, LEDGER_KEY, mcOf } from '../hooks/mission-control'
@@ -152,6 +152,65 @@ describe('the digest reaches Claude, the task instruction and the swarm', () => 
     await setAttached(state, host as never, '0003-use-graphql.md', false)
     expect(await readAdrDigest(swarmFs, Date.now())).toBeNull()
     expect(await mirrorDigest(state, host as never)).toBeNull()
+  })
+
+  it('the digest follows the ACTIVE mission: a switch rewrites it, a mission with nothing attached clears it, and a project that never attached gets no file', async () => {
+    const { state, host, root, log } = await world('nygard')
+    const file = join(root, DIGEST_FILE)
+    const mine = state
+
+    await syncAdrDigest(mine, host as never)
+    expect(existsSync(file), 'nothing attached, nothing written').toBe(false)
+
+    await setAttached(mine, host as never, '0003-use-graphql.md', true)
+    expect(JSON.parse(readFileSync(file, 'utf8')).block).toContain('GraphQL')
+
+    // Switch to a second mission with nothing attached: the first one's decisions must not reach its subagents.
+    const other = missionOf({ id: 'msn_bbbbbbbbbbbbbbbbbbbbbbbb', objective: 'Something else' })
+
+    mcOf(mine).missions.set(other.id, other)
+    mcOf(mine).active = other.id
+    await syncAdrDigest(mine, host as never)
+
+    const cleared = JSON.parse(readFileSync(file, 'utf8')) as { block: string; mission: string }
+
+    expect(cleared).toMatchObject({ block: '', mission: 'msn_bbbbbbbbbbbbbbbbbbbbbbbb' })
+
+    // And back again.
+    mcOf(mine).active = 'msn_aaaaaaaaaaaaaaaaaaaaaaaa'
+    await syncAdrDigest(mine, host as never)
+    expect(JSON.parse(readFileSync(file, 'utf8')).block).toContain('GraphQL')
+
+    // An unchanged state writes nothing more.
+    const writes = log.runs.length
+
+    await syncAdrDigest(mine, host as never)
+    await syncAdrDigest(mine, host as never)
+    expect(log.runs.length).toBe(writes)
+  })
+
+  it('a file left by an earlier session is cleared at the first look; an unread registry is not mistaken for "nothing attached"', async () => {
+    const { state, host, root, mission } = await world('nygard')
+    const file = join(root, DIGEST_FILE)
+
+    mkdirSync(join(root, '.claude-flow/console'), { recursive: true })
+    writeFileSync(file, JSON.stringify({ v: 1, atMs: Date.now(), mission: 'old', adrs: [], block: 'STALE decisions' }))
+    await syncAdrDigest(state, host as never)
+    expect(JSON.parse(readFileSync(file, 'utf8')).block).toBe('')
+
+    // A new session: the mission has an attachment but the folder is not read yet. The file is left alone until it is.
+    ;(mission as MissionRecord).adrs = ['0003-use-graphql.md']
+
+    const fresh = await world('nygard')
+    const m = fresh.mission as MissionRecord
+
+    m.adrs = ['0003-use-graphql.md']
+    writeFileSync(join(fresh.root, 'keep.txt'), 'x')
+    mkdirSync(join(fresh.root, '.claude-flow/console'), { recursive: true })
+    writeFileSync(join(fresh.root, DIGEST_FILE), JSON.stringify({ v: 1, atMs: Date.now(), mission: m.id, adrs: [], block: 'KEEP until read' }))
+    adrOf(fresh.state).isLoaded = false
+    await syncAdrDigest(fresh.state, fresh.host as never)
+    expect(JSON.parse(readFileSync(join(fresh.root, DIGEST_FILE), 'utf8')).block).toBe('KEEP until read')
   })
 
   it('the swarm ignores a digest that is oversize, malformed or from a hostile writer', async () => {

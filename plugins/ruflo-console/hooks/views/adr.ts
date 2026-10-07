@@ -10,7 +10,7 @@ import type { RenderElement } from 'claude-code'
 import { adrOf, docOf, transitionsOf } from '../adr'
 import { attachedOf, suggestFor } from '../adr-mission'
 import { countsOf, filterDocs, graphOf, STATUSES, type AdrDoc, type AdrStatus } from '../data/adr'
-import { activeMission, mcOf } from '../mission-control'
+import { activeMission, mcOf, progressOf } from '../mission-control'
 import { button, col, kv, row, rule, section, text, THEME, type Ctx } from './common'
 
 const PAGE = 14
@@ -88,7 +88,7 @@ function missionRows(ctx: Ctx): RenderElement[] {
   const adr = adrOf(ctx.state)
   const mission = activeMission(ctx.state)
 
-  if (mission === null) return [para(ctx, ' No active mission. In Missions, create one: its ADRs are attached here, and Claude and the swarm are told the accepted decisions.', { dimColor: true })]
+  if (mission === null) return [para(ctx, ' No active mission. In Missions, create one: its ADRs are attached here, and Claude and the swarm are told the accepted decisions. The check of changed files compares paths only and does not prove a change follows a decision.', { dimColor: true })]
 
   const attached = attachedOf(mission).map(file => docOf(ctx.state, file) ?? null)
   const suggestions = suggestFor(ctx.state, mission, mission.objective)
@@ -106,6 +106,9 @@ function missionRows(ctx: Ctx): RenderElement[] {
     for (const suggestion of suggestions) rows.push(row(ctx, [button(ctx, `adr-sug-${suggestion.doc.file}`, `＋ ADR ${suggestion.doc.number ?? suggestion.doc.file}`, () => ctx.act.adrs.attach(suggestion.doc.file, true)), text(ctx, ` ${suggestion.doc.title.slice(0, 40)} · ${suggestion.why}`.slice(0, Math.max(10, ctx.columns - 22)), { dimColor: true })], `adr-sugrow-${suggestion.doc.file}`))
   }
 
+  const progress = progressOf(mission, ctx.state.snapshot?.tasks ?? [])
+
+  if (progress.total > 0 && progress.done >= progress.total) rows.push(text(ctx, ' this mission is finished: if it decided something worth keeping, draft an ADR below (a person writes the decision)', { color: THEME.ok }))
   rows.push(row(ctx, [button(ctx, 'adr-scope', '▸ check changed files against the attached ADRs', () => ctx.act.adrs.scope()), button(ctx, 'adr-draft', '▸ draft an ADR from this mission', () => ctx.act.adrs.draft())], 'adr-mission-actions'))
   if (adr.scope !== null) rows.push(...adr.scope.hits.slice(0, 6).map(hit => text(ctx, `  ! ${hit.file} is in the scope of ADR ${hit.adr.number ?? hit.adr.file} (${hit.entry})`, { color: THEME.warn })))
 

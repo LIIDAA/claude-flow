@@ -9,6 +9,7 @@ import type { ActionSpec } from './actions'
 import type { AdrDoc } from './data/adr'
 import { checkScope, digestBlock, reportLines, suggest, type Suggestion } from './data/adr-scope'
 import { draftFromMission } from './data/adr-write'
+import { loadAdrs } from './adr'
 import { plain } from './data/parse'
 import type { Host } from './host'
 import { activeMission, record, saveLedger } from './mission-control'
@@ -63,6 +64,44 @@ export async function mirrorDigest(state: State, host: Pick<Host, 'fs' | 'run'>)
   const body = JSON.stringify({ v: 1, atMs: Date.now(), mission: mission?.id ?? '', adrs: docs.slice(0, MAX_ATTACH).map(doc => ({ number: doc.number, file: doc.file, status: doc.status })), block: digestBlock(docs) })
 
   return replaceFile(host, state.cwd, `${root(state)}/${DIGEST_FILE}`, body)
+}
+
+const mirrored = new WeakMap<State, string>()
+
+/**
+ * Keeps the swarm's digest file true to the ACTIVE mission, called from the controller's tick and cheap when nothing moved: it writes only
+ * when the active mission or the text of its digest changed, writes an empty digest (which the swarm treats as none) when nothing is
+ * attached, and clears a file an earlier session left behind. It never creates a file in a project that has never attached an ADR, and it
+ * does not judge before the folder has been read (an unread registry would look like "nothing attached").
+ */
+export async function syncAdrDigest(state: State, host: Host): Promise<void> {
+  const mission = activeMission(state)
+  const attached = mission === null ? [] : attachedOf(mission)
+  const adr = adrOf(state)
+
+  if (attached.length > 0 && !adr.isLoaded) {
+    if (!adr.isLoading) void loadAdrs(state, host)
+
+    return
+  }
+
+  const block = mission === null ? '' : digestBlock(attachedDocs(state, mission))
+  const key = `${mission?.id ?? ''}|${block}`
+  const before = mirrored.get(state)
+
+  if (before === key) return
+
+  mirrored.set(state, key)
+
+  // The first look of a session at an empty digest only matters if an earlier session left a non-empty file.
+  if (before === undefined && block === '') {
+    const stat = await host.fs.stat(`${root(state)}/${DIGEST_FILE}`).catch(() => undefined)
+
+    if (stat === undefined) return
+  }
+
+  // A failed write is tried again on the next tick.
+  if ((await mirrorDigest(state, host)) !== null) mirrored.delete(state)
 }
 
 /** Files changed in the project: uncommitted work, and commits since the mission began. Read-only git. */

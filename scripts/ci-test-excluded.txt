@@ -81,6 +81,7 @@ tests/check-status-forwarding.test.mjs
 plugins/ruflo-console/tests/result-display.test.ts
 plugins/ruflo-console/tests/toasts.test.ts
 plugins/ruflo-console/tests/whatsnew.test.ts
+plugins/ruflo-console/tests/adrs.test.ts
 plugins/ruflo-protector/tests/corpus.test.ts
 plugins/ruflo-protector/tests/mod.test.ts
 plugins/ruflo-protector/tests/rules.test.ts

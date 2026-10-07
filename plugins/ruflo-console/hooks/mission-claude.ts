@@ -132,7 +132,7 @@ export function claudeActions(state: State, host: Host, runner: Runner): Pick<Mi
           args: [],
           shows: gates.map(gate => gate.argv.join(' ')).join('  ·  '),
           expect: 'each gate’s exit code and a short output summary recorded as evidence on the mission',
-          note: 'Runs the commands you configured, one after another, without a shell, in this project. Their output is evidence; nothing is changed by the console.',
+          note: 'Runs the commands you configured, one after another, without a shell, in this project. Their output is evidence; nothing is changed by the console. With ADRs attached to the mission it then compares the changed files (git status and git log, read-only) with the paths those ADRs name, as a warning in the record.',
           run: async () => {
             let failed = 0
 
