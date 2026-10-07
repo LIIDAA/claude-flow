@@ -54,6 +54,7 @@ function hostOf($: EngineInterface, cwd: string, toasts: { prefs: () => ToastPre
     source: 'console',
     now: () => Date.now(),
     show: (line, options) => $.ui.toast(line, options),
+    after: (ms, fn) => $.clock.after(ms, fn),
     prefs: toasts.prefs,
     persist: toasts.record,
   })

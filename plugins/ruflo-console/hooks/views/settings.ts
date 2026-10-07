@@ -400,7 +400,7 @@ export function settingsView(ctx: Ctx): RenderElement {
   // Most important first: what Claude may do and spend, then the AI terminal, the interface, and the long lists last.
   rows.push(...section(ctx, 'safety', 'Claude control & spending', 'what Claude may do and what it may spend', [...safety, text(ctx, ' claude runs read-only in plan mode and codex in a read-only sandbox: this view never widens either.', { dimColor: true })]))
   rows.push(...section(ctx, 'ai', 'AI terminal', 'claude -p and codex exec: saved here, applied to the next turn', aiRest))
-  rows.push(...section(ctx, 'ui', 'Interface & updates', 'the main nav, update checks', shown.filter(item => item.id.startsWith('ui-')).flatMap(item => item.rows())))
+  rows.push(...section(ctx, 'ui', 'Interface & updates', 'the main nav, update checks, toasts', shown.filter(item => item.id.startsWith('ui-')).flatMap(item => item.rows())))
   rows.push(...section(ctx, 'allowed', 'Remembered actions', `${ctx.state.allowed.size} kind${ctx.state.allowed.size === 1 ? '' : 's'} not asked again`, rememberedRows(ctx), ctx.state.allowed.size > 0))
   rows.push(...section(ctx, 'config', 'ruflo config', settings.coreLoading ? 'reading…' : 'ruflo config get / set', shown.filter(item => item.id.startsWith('core-')).flatMap(item => item.rows())))
   rows.push(...section(ctx, 'options', 'Plugin options', `${names.length} ruflo plugins with options`, pluginRows))

@@ -6,7 +6,7 @@ Date: 2026-10-07
 
 Builds on: ADR-404 (ruflo as a mod), ADR-453 (Project Anatole), ADR-474 (the Events store), ADR-466 (the autopilot's notices)
 
-Numbering: ADR-475 is taken by an open change (the policy ledger anchor); 476 is left free.
+Numbering: ADR-475 (policy ledger anchor) and ADR-476 (hive-mind gating) were taken by other changes while this was written.
 
 ## 1. Context
 
@@ -106,8 +106,9 @@ answers it.
 
 - A toast is attacker-influenced text (a rule name, a peer's origin, an agent's label). It is washed to one line and masked before it is
   drawn or written; the digest is washed again when read; a ring file is not trusted to name its own source.
-- A toast changes no verdict, answer or hook result: every call is in a `try`, a refusal is swallowed, and the mods' verdicts do not wait
-  on a write (the recorder is fire and forget).
+- A toast changes no verdict, answer or hook result: every call is in a `try`, a refusal is swallowed, and the mods' verdicts wait at most for
+  the clock and one setting read (cached for 4 s), never for a digest write (the recorder is fire and forget). A fire-and-forget toast
+  after the hook returned was tried and lost digests in the engine kit, so the mods await the toast, not the write.
 - Muting is the person's alone and only narrows: no plugin can unmute another, and the default with no file is "all", so a deleted or
   corrupt setting never silences an error for good.
 - The engine's static validation follows `$` only into a function declared in the same file: the mods bind the engine's calls from the `$`
