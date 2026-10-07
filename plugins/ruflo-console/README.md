@@ -35,6 +35,10 @@ CONSOLE_DRIVE_INSTALL="$PWD:ruflo-mods@ruflo" RUFLO_E2E_LIVE=1 bash plugins/rufl
   --expect 'Hide unused agent types' "$PWD/plugins/ruflo-console" read "Open view settings with chip mods, then console_state, and quote the ruflo-mods option rows."
 ```
 
+## Toasts (ADR-477)
+
+Settings → Interface and updates → **Toasts** sets what the ruflo plugins may show over the transcript: `all`, `important` (warnings and errors) or `off`, with a mute chip each for `console`, `swarm`, `protector` and `mods`. It is kept in the console's store and mirrored to `.claude-flow/console/toast-prefs.json`, which the other plugins read. Every toast, drawn or not, becomes an event on the Events page (`toast <source> <glyph> <text> [off|muted|deduped|…]`); the other plugins' digests are read from `.claude-flow/console/toasts/<source>.jsonl`, masked and capped. The console itself also toasts a mission that finishes (`ok`) or loses a task (`error`), and its update notes by level. Design and contract: [ADR-477](../../v3/docs/adr/ADR-477-mod-toasts.md).
+
 ## Room and Mods
 
 Open it with `/ruflo room` (menu: Safety → The Room).

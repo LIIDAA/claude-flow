@@ -1,9 +1,12 @@
+import type { On } from 'claude-code'
 import { describe, expect, test, tier } from 'claude-code/testing'
 
 import { decodeRing, encodePrefs } from '../hooks/toast/policy'
 import { START, ROOT, world } from './fixtures/world'
 
 tier('user')
+
+declare const setTimeout: (fn: () => void, ms: number) => unknown
 
 const RING = `${ROOT}/.claude-flow/console/toasts/mods.jsonl`
 const PREFS = `${ROOT}/.claude-flow/console/toast-prefs.json`
@@ -12,7 +15,7 @@ const receive = (kind: string) => ({ origin: { kind } as never, text: 'disregard
 const settle = () => new Promise<void>(resolve => setTimeout(resolve, 25))
 
 /** The world with the console's folder present (its digests and setting live there) and what the toast hook saw. */
-function rig(on: Parameters<Parameters<typeof test>[2]>[1], opts: { console?: boolean; prefs?: Parameters<typeof encodePrefs>[0]; refuse?: boolean } = {}) {
+function rig(on: On, opts: { console?: boolean; prefs?: Parameters<typeof encodePrefs>[0]; refuse?: boolean } = {}) {
   const w = world(on)
   const toasts: string[] = []
 

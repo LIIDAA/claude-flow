@@ -7,6 +7,8 @@ import { FAKE } from './support'
 
 tier('user')
 
+declare const setTimeout: (fn: () => void, ms: number) => unknown
+
 const ROOT = '/work'
 const START = { surface: 'terminal', isInteractive: true, cwd: ROOT } as const
 const slash = (args: string) => ({ command: 'protector', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } }) as const

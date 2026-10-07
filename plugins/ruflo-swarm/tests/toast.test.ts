@@ -1,3 +1,4 @@
+import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { decodeRing, encodePrefs } from '../hooks/toast-policy'
@@ -5,12 +6,14 @@ import { RUFLO_RUN } from './fixtures/ruflo-run'
 import { SESSION } from './fixtures/inputs'
 import { worldOf } from './fixtures/world'
 
+declare const setTimeout: (fn: () => void, ms: number) => unknown
+
 const RING = '.claude-flow/console/toasts/swarm.jsonl'
 const settle = () => new Promise<void>(resolve => setTimeout(resolve, 25))
 const failing = (command: string, agentId = 'agent-cc-1') => ({ tool: 'Bash', command, agentId }) as never
 
 /** The world, plus the console's folder and the two file calls the policy makes (exists, write). */
-function rig(on: Parameters<Parameters<typeof test>[1]>[1], opts: { console?: boolean; prefs?: Parameters<typeof encodePrefs>[0] } = {}) {
+function rig(on: On, opts: { console?: boolean; prefs?: Parameters<typeof encodePrefs>[0] } = {}) {
   const world = worldOf(on, opts.prefs === undefined ? RUFLO_RUN : { ...RUFLO_RUN, '.claude-flow/console/toast-prefs.json': encodePrefs(opts.prefs) })
 
   mock.clock(on)
