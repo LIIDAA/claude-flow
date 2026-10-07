@@ -38,9 +38,9 @@ const taskType = (profile: Profile) => (profile === 'bugfix' ? 'bugfix' : profil
  */
 export function createWhy(state: State): string | null {
   const goal = mcOf(state).goal
-  const fit = checkLimit(goal, MISSION_OBJECTIVE_MAX, 'the goal', 'the ruflo mission record takes at most that many; planning, guidance and the skills use the whole goal')
+  const fit = checkLimit(goal, MISSION_OBJECTIVE_MAX, 'the goal', 'the ruflo mission record takes at most that many; planning, guidance and the skills use the whole goal', 'No mission was created; ✎ edit the goal to fit.')
 
-  return fit.ok ? null : `${fit.message.replace(/ Nothing was sent or changed; shorten it and ask again\.$/, '')} No mission was created; ✎ edit the goal to fit.`
+  return fit.ok ? null : fit.message
 }
 
 /** Create the mission: `mission_create`, `mission_plan`, then a ruflo task per plan node. One confirm for the chain. */

@@ -1,7 +1,6 @@
 /** Palette entries for Mission Control, so `/ruflo run mission-next` and `/ruflo plan <goal>` work headless; a write or a turn still asks. */
 import type { ActionSpec } from './actions'
 import { blocksCreate } from './mission-options'
-import { keepText } from './field-keep'
 import { activeMission, cancelSpec, createSpec, createWhy, dispatchSpec, longRefusal, mcOf, missionWired, nextTask, setGoal } from './mission-control'
 import type { PaletteEntry } from './palette'
 import type { State } from './state'
@@ -15,7 +14,6 @@ function planGoal(state: State, value: string, wired: ReturnType<typeof missionW
 
   if (refusal === null) return setGoal(state, value)
 
-  keepText(state, value)
   mcOf(state).last = { label: 'goal not planned', ok: false, detail: refusal }
   wired?.host.invalidate()
 }

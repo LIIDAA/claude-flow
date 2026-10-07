@@ -1,5 +1,5 @@
 import { takeKept } from '../field-keep'
-import { countOf, grouped, showTail } from '../full-text'
+import { countOf, grouped, INPUT_VALUE_MAX, showTail } from '../full-text'
 
 /** Lines the typing mirror grows to before it shows the last lines with a marker. */
 export const ECHO_LINES = 12
@@ -75,7 +75,9 @@ export function withClearing(kit: Kit, state: State, clear: (key: string) => voi
         return echo === undefined ? own : withEcho(kit, own, props.key, props.label, props.value, echo.columns)
       }
 
-      const current = state.fieldText.get(props.key) ?? ''
+      // A value over the host's bound would make the engine refuse the whole pane: never drawn.
+      const stored = state.fieldText.get(props.key) ?? ''
+      const current = countOf(stored) > INPUT_VALUE_MAX ? '' : stored
       const drawn = Input({
         ...props,
         value: current,

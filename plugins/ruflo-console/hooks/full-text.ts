@@ -13,8 +13,14 @@
 
 import { plain } from './data/parse'
 
-/** Characters a person's long-form text may have when it is sent to Claude as a prompt (stdin or the session prompt: no argv is involved). */
-export const LONG_TEXT_MAX = 20_000
+/**
+ * The most a host Input holds. Measured (tests/full-text.test.ts): an Input whose `value` is longer makes the engine refuse the WHOLE pane
+ * ("Input value longer than 10000 characters; the engine drew its own"), so no field can carry more, and no value above it may ever be drawn.
+ */
+export const INPUT_VALUE_MAX = 10_000
+
+/** Characters a person's long-form text may have when it is sent to Claude as a prompt (stdin or the session prompt: no argv is involved): what a field can hold. */
+export const LONG_TEXT_MAX = INPUT_VALUE_MAX
 
 /**
  * The most a ruflo mission record takes as its objective: `mission_create`'s input schema says `objective: { maxLength: 2000 }`
@@ -137,7 +143,7 @@ export type Limit = { ok: true; length: number } | { ok: false; length: number; 
  * Whether `text` fits a real limit. Over it: the exact message (what, the limit, the length, the characters over), for the caller to show
  * BEFORE acting; the caller keeps the text in the field and runs nothing. `why` names the reason for the limit.
  */
-export function checkLimit(text: string, limit: number, what: string, why = ''): Limit {
+export function checkLimit(text: string, limit: number, what: string, why = '', tail = 'Nothing was sent or changed; shorten it and ask again.'): Limit {
   const length = countOf(text)
 
   if (length <= limit) return { ok: true, length }
@@ -149,7 +155,7 @@ export function checkLimit(text: string, limit: number, what: string, why = ''):
     length,
     limit,
     over,
-    message: `${what} is ${grouped(length)} characters; the limit is ${grouped(limit)}${why === '' ? '' : ` (${why})`}: ${grouped(over)} over. Nothing was sent or changed; shorten it and ask again.`,
+    message: `${what} is ${grouped(length)} characters; the limit is ${grouped(limit)}${why === '' ? '' : ` (${why})`}: ${grouped(over)} over. ${tail}`,
   }
 }
 
