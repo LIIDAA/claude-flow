@@ -4,6 +4,7 @@
  * ticks that arrive carrying the mission's marker, and says when the loop is overdue, about to expire or gone.
  */
 import { plain } from './data/parse'
+import { MISSION_OBJECTIVE_MAX } from './full-text'
 import { DEFAULT_LOOP, type LoopPrefs } from './goap'
 import type { Derived, MissionRecord } from './mission-types'
 
@@ -59,13 +60,14 @@ export function loopPrompt(mission: MissionRecord, prefs: LoopPrefs): string {
   const push = prefs.loopPush ? 'the mission branch may be pushed to its remote' : 'do not push'
   const publish = prefs.loopPublish ? 'releases or packages the mission names may be published' : 'do not publish, release or deploy'
   const parts = [
-    `${loopMarker(mission.id)} Mission ${idOf(mission.id)}: ${plain(mission.objective, 200)}.`,
+    `${loopMarker(mission.id)} Mission ${idOf(mission.id)}: ${plain(mission.objective, MISSION_OBJECTIVE_MAX)}.`,
     'Each tick: 1 check progress against the plan; 2 fix what failed; 3 run the gates and read their real output; 4 repeat until every acceptance check passes and every gate is green on the same clean commit, then stop the loop and report.',
     'Stop and ask only when a gate fails the same way three ticks running or an action would leave the branch.',
     `${commit}; ${push}; ${publish}.`,
   ]
 
-  return plain(parts.join(' '), 1000)
+  // The whole objective rides in the prompt (a ruflo mission's objective is at most MISSION_OBJECTIVE_MAX); the fixed checklist is the other 1,000.
+  return plain(parts.join(' '), MISSION_OBJECTIVE_MAX + 1000)
 }
 
 /** The line that starts the loop: `/loop <interval> <prompt>`, the interval well formed and never below 1m. */
